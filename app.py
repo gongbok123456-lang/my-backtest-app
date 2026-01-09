@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import math
 import time
+import io
 
 # --- [페이지 설정] ---
 st.set_page_config(page_title="쪼꼬야옹 백테스트 연구소", page_icon="📈", layout="wide")
@@ -25,19 +26,14 @@ def excel_round_down(n, decimals=0):
     multiplier = 10 ** decimals
     return math.floor(n * multiplier + 1e-9) / multiplier
 
-# 🟢 [복원] Colab과 동일한 LOC 수량 계산 함수
 def calculate_loc_quantity(seed_amount, order_price, close_price, buy_range, max_add_orders):
     if seed_amount is None or order_price is None or order_price <= 0:
         return 0
 
-    # 1. Base Qty
     base_qty = int(seed_amount / order_price)
-
-    # 2. Bot Price (바닥 가격)
     multiplier = (1 + buy_range) if buy_range <= 0 else (1 - buy_range)
     bot_price = math.floor(order_price * multiplier * 100 + 1e-9) / 100
 
-    # 3. Fix Qty
     if bot_price > 0:
         qty_at_bot_float = seed_amount / bot_price
         qty_at_order_float = seed_amount / order_price
@@ -46,23 +42,18 @@ def calculate_loc_quantity(seed_amount, order_price, close_price, buy_range, max
         fix_qty = 0
 
     if fix_qty < 0: fix_qty = 0
-
     final_qty = 0
 
-    # [Step 0] 기본 주문
     current_cum_qty = base_qty
     if current_cum_qty > 0:
         implied_price = seed_amount / current_cum_qty
         if implied_price >= close_price and implied_price >= bot_price:
             final_qty += base_qty
 
-    # [Step 1 ~ Max] 추가 주문
     for i in range(1, max_add_orders + 1):
         step_qty = fix_qty
         current_cum_qty = base_qty + (i * step_qty)
-
         if current_cum_qty <= 0: continue
-
         implied_price = seed_amount / current_cum_qty
         if implied_price >= close_price and implied_price >= bot_price:
             final_qty += step_qty
@@ -71,17 +62,15 @@ def calculate_loc_quantity(seed_amount, order_price, close_price, buy_range, max
 
 # --- [핵심 엔진] ---
 def backtest_engine_web(df, params):
-    # 1. 데이터 준비
     df = df.copy()
     ma_window = int(params['ma_window'])
     df['MA_New'] = df['QQQ'].rolling(window=ma_window, min_periods=1).mean()
     df['Disparity'] = df['QQQ'] / df['MA_New']
     
-    # 주간 데이터 매핑 (Colab 로직 일치)
     weekly_series = df['Disparity'].resample('W-FRI').last()
     weekly_df = pd.DataFrame({'Basis_Disp': weekly_series})
     calendar_df = weekly_df.resample('D').ffill()
-    calendar_shifted = calendar_df.shift(1) # 하루 밀기
+    calendar_shifted = calendar_df.shift(1)
     daily_mapped = calendar_shifted.reindex(df.index).ffill()
     df['Basis_Disp'] = daily_mapped['Basis_Disp']
     df['Prev_Close'] = df['SOXL'].shift(1)
@@ -93,8 +82,6 @@ def backtest_engine_web(df, params):
     if len(df) == 0: return None
 
     dates = df.index
-
-    # 2. 전략 파라미터
     strategy = {
         'Bottom':  {'cond': params['bt_cond'], 'buy': params['bt_buy'], 'prof': params['bt_prof'], 'time': params['bt_time']},
         'Ceiling': {'cond': params['cl_cond'], 'buy': params['cl_buy'], 'prof': params['cl_prof'], 'time': params['cl_time']},
@@ -105,39 +92,31 @@ def backtest_engine_web(df, params):
     seed_equity = cash
     holdings = []
     
-    # 기록용 로그 리스트
     trade_log = [] 
     daily_log = [] 
-    
     daily_equity = []
     daily_dates = []
     trade_count = 0
     win_count = 0
     
     MAX_SLOTS = 10
-    SEC_FEE = 0.0000278 # SEC fee (Colab 일치)
+    SEC_FEE = 0.0000278
 
-    # 3. 일별 반복
     for i in range(len(df)):
         row = df.iloc[i]
         today_close = row['SOXL']
-        # force_round 적용
         if params.get('force_round', True): today_close = round(today_close, 2)
 
         disp = row['Basis_Disp'] if not pd.isna(row['Basis_Disp']) else 1.0
         
-        # 모드 결정
         if disp < strategy['Bottom']['cond']: phase = 'Bottom'
         elif disp > strategy['Ceiling']['cond']: phase = 'Ceiling'
         else: phase = 'Middle'
         
         conf = strategy[phase]
-        
-        # 🟢 [중요] 시드 계산: 장 시작 전 seed_equity 기준
         target_seed_float = seed_equity / MAX_SLOTS
         target_seed = int(target_seed_float + 0.5)
 
-        # [매도]
         tiers_sold = set()
         daily_net_profit_sum = 0
         
@@ -149,7 +128,6 @@ def backtest_engine_web(df, params):
             
             is_sold = False
             reason = ""
-            
             if days >= s_conf['time']: 
                 is_sold = True; reason = f"TimeCut({days}d)"
             elif today_close >= target_p: 
@@ -158,22 +136,15 @@ def backtest_engine_web(df, params):
             if is_sold:
                 holdings.remove(stock)
                 tiers_sold.add(tier)
-                
                 sell_amt = today_close * qty
                 sec_fee_val = round(sell_amt * SEC_FEE, 2)
-                
                 net_receive = sell_amt * (1 - params['fee_rate']) - sec_fee_val
                 buy_cost = (buy_p * qty) * (1 + params['fee_rate'])
-                
                 real_profit = round(net_receive - buy_cost, 2)
                 daily_net_profit_sum += real_profit
-                
-                # 실제 현금은 즉시 입금
                 cash += net_receive
-                
                 trade_count += 1
                 if real_profit > 0: win_count += 1
-
                 trade_log.append({
                     'Date': dates[i], 'Type': 'Sell', 'Tier': tier, 'Phase': mode,
                     'Price': today_close, 'Qty': qty, 'Profit': real_profit, 'Reason': reason
@@ -181,16 +152,12 @@ def backtest_engine_web(df, params):
             else:
                 stock[1] = days
         
-        # [투자금 갱신] 매도 루프 종료 후 일괄 반영 (Colab 로직)
         if daily_net_profit_sum != 0:
             rate = params['profit_rate'] if daily_net_profit_sum > 0 else params['loss_rate']
             seed_equity += daily_net_profit_sum * rate
             
-        # [매수]
         prev_c = row['Prev_Close'] if not pd.isna(row['Prev_Close']) else today_close
         target_p = excel_round_down(prev_c * (1 + conf['buy'] / 100), 2)
-        
-        # 베팅 금액은 (갱신 전 시드)와 (현재 현금) 중 작은 값
         bet = min(target_seed_float, cash)
         if bet < 10: bet = 0
         
@@ -201,7 +168,6 @@ def backtest_engine_web(df, params):
             while new_tier in unavail: new_tier += 1
             
             if new_tier <= MAX_SLOTS:
-                # 🟢 [복원] 정밀 LOC 수량 계산 (Colab 일치)
                 final_qty = 0
                 if new_tier == MAX_SLOTS:
                     final_qty = int(bet / target_p)
@@ -210,11 +176,9 @@ def backtest_engine_web(df, params):
                         seed_amount=bet,
                         order_price=target_p,
                         close_price=today_close,
-                        buy_range= -1 * (params['loc_range'] / 100.0), # 음수 변환 주의
+                        buy_range= -1 * (params['loc_range'] / 100.0),
                         max_add_orders=int(params['add_order_cnt'])
                     )
-
-                # 현금 부족 시 조정
                 max_buyable = int(cash / (today_close * (1 + params['fee_rate'])))
                 real_qty = min(final_qty, max_buyable)
                 
@@ -222,37 +186,29 @@ def backtest_engine_web(df, params):
                     buy_amt = today_close * real_qty * (1 + params['fee_rate'])
                     cash -= buy_amt
                     holdings.append([today_close, 0, real_qty, phase, new_tier, dates[i]])
-                    
                     trade_log.append({
                         'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase,
                         'Price': today_close, 'Qty': real_qty, 'Profit': 0, 'Reason': 'LOC'
                     })
         
-        # 자산 기록
         current_eq = cash + sum([h[2]*today_close for h in holdings])
         daily_equity.append(current_eq)
         daily_dates.append(dates[i])
-        
         daily_log.append({
             'Date': dates[i], 'Equity': round(current_eq, 2), 
             'Cash': round(cash, 2), 'SeedEquity': round(seed_equity, 2), 
             'Holdings': len(holdings)
         })
 
-    # 4. 결과 지표 계산
     final_equity = daily_equity[-1]
     total_ret_pct = (final_equity / params['initial_balance'] - 1) * 100
-    
     days_total = (dates[-1] - dates[0]).days
     cagr = ((final_equity / params['initial_balance']) ** (365/days_total) - 1) * 100 if days_total > 0 else 0
-    
     eq_series = pd.Series(daily_equity, index=daily_dates)
     peak = eq_series.cummax()
     mdd = ((eq_series / peak - 1) * 100).min()
-    
     win_rate = (win_count / trade_count * 100) if trade_count > 0 else 0
     
-    # YE 경고 방지
     try:
         yearly_ret = eq_series.resample('YE').last().pct_change() * 100
         yearly_ret.iloc[0] = (eq_series.resample('YE').last().iloc[0] / params['initial_balance'] - 1) * 100
@@ -277,28 +233,21 @@ def backtest_engine_web(df, params):
 # --- [UI 구성] ---
 st.title("📊 쪼꼬야옹 백테스트 연구소")
 
-# 1. 사이드바 (설정)
 with st.sidebar:
     st.header("⚙️ 기본 설정")
     uploaded_file = st.file_uploader("📂 데이터 파일 (CSV)", type=['csv'])
-    
     st.subheader("💰 자산 및 복리 설정")
     balance = st.number_input("초기 자본 ($)", value=10000)
     fee = st.number_input("수수료 (%)", value=0.07)
-    
-    profit_rate = st.slider("이익 복리율 (%)", 0, 100, 70) # [cite: 1] 기본값 100이나 사용자가 70으로 씀
-    loss_rate = st.slider("손실 복리율 (%)", 0, 100, 50)   # [cite: 1] 기본값 50
-    
+    profit_rate = st.slider("이익 복리율 (%)", 0, 100, 70)
+    loss_rate = st.slider("손실 복리율 (%)", 0, 100, 50)
     st.subheader("📥 LOC 설정")
-    # Colab 코드의 기본값 참조 [cite: 1]
     add_order_cnt = st.number_input("추가 주문 횟수", value=4, min_value=1) 
     loc_range = st.number_input("하단 범위 (-%)", value=20.0, min_value=0.0) 
-    
     st.subheader("📈 기간 설정")
     start_date = st.date_input("시작일", pd.to_datetime("2014-01-01"))
     end_date = st.date_input("종료일", pd.to_datetime("2025-12-31"))
 
-# 2. 메인 화면 로직
 if uploaded_file is not None:
     df = pd.read_csv(uploaded_file, parse_dates=['Date'])
     df.set_index('Date', inplace=True)
@@ -306,33 +255,27 @@ if uploaded_file is not None:
     
     tab1, tab2, tab3 = st.tabs(["🚀 백테스트", "🎲 몬테카를로 최적화", "🔬 심층 분석"])
     
-    # ==========================
-    # 탭 1: 백테스트 (개별 실행)
-    # ==========================
+    # 탭 1: 백테스트
     with tab1:
         st.subheader("🛠️ 전략 파라미터 입력")
-        
         col1, col2, col3 = st.columns(3)
         with col1:
             st.markdown("##### 📉 바닥 (Bottom)")
-            bt_cond = st.number_input("기준 이격도", 0.8, 1.0, 0.90, step=0.01) # [cite: 1] 기본값
-            bt_buy = st.number_input("매수점 (%)", -30.0, 30.0, 15.0, step=0.1, key='bt_b') # [cite: 1] 15.0
-            bt_prof = st.number_input("익절 (%)", 0.0, 100.0, 2.5, step=0.1, key='bt_p')   # [cite: 1] 2.5
-            bt_time = st.number_input("존버일", 1, 100, 10, key='bt_t')                   # [cite: 1] 10
-            
+            bt_cond = st.number_input("기준 이격도", 0.8, 1.0, 0.90, step=0.01)
+            bt_buy = st.number_input("매수점 (%)", -30.0, 30.0, 15.0, step=0.1, key='bt_b')
+            bt_prof = st.number_input("익절 (%)", 0.0, 100.0, 2.5, step=0.1, key='bt_p')
+            bt_time = st.number_input("존버일", 1, 100, 10, key='bt_t')
         with col2:
             st.markdown("##### ➖ 중간 (Middle)")
-            md_buy = st.number_input("매수점 (%)", -30.0, 30.0, -0.01, step=0.1, key='md_b') # [cite: 1] -0.01
-            md_prof = st.number_input("익절 (%)", 0.0, 100.0, 2.8, step=0.1, key='md_p')     # [cite: 1] 2.8
-            md_time = st.number_input("존버일", 1, 100, 15, key='md_t')                     # [cite: 1] 15
-
+            md_buy = st.number_input("매수점 (%)", -30.0, 30.0, -0.01, step=0.1, key='md_b')
+            md_prof = st.number_input("익절 (%)", 0.0, 100.0, 2.8, step=0.1, key='md_p')
+            md_time = st.number_input("존버일", 1, 100, 15, key='md_t')
         with col3:
             st.markdown("##### 📈 천장 (Ceiling)")
-            cl_cond = st.number_input("기준 이격도", 1.0, 1.5, 1.10, step=0.01) # [cite: 1] 1.10
-            cl_buy = st.number_input("매수점 (%)", -30.0, 30.0, -0.1, step=0.1, key='cl_b') # [cite: 1] -0.1
-            cl_prof = st.number_input("익절 (%)", 0.0, 100.0, 1.5, step=0.1, key='cl_p')    # [cite: 1] 1.5
-            cl_time = st.number_input("존버일", 1, 100, 40, key='cl_t')                    # [cite: 1] 40
-            
+            cl_cond = st.number_input("기준 이격도", 1.0, 1.5, 1.10, step=0.01)
+            cl_buy = st.number_input("매수점 (%)", -30.0, 30.0, -0.1, step=0.1, key='cl_b')
+            cl_prof = st.number_input("익절 (%)", 0.0, 100.0, 1.5, step=0.1, key='cl_p')
+            cl_time = st.number_input("존버일", 1, 100, 40, key='cl_t')
         ma_win = st.number_input("이평선 (MA)", 50, 300, 200)
 
         if st.button("백테스트 실행 (Run)", type="primary"):
@@ -340,8 +283,8 @@ if uploaded_file is not None:
                 'start_date': start_date, 'end_date': end_date,
                 'initial_balance': balance, 'fee_rate': fee/100,
                 'profit_rate': profit_rate/100.0, 'loss_rate': loss_rate/100.0,
-                'loc_range': loc_range, 'add_order_cnt': add_order_cnt, # 🟢 추가된 파라미터
-                'force_round': True, # 🟢 소수점 처리
+                'loc_range': loc_range, 'add_order_cnt': add_order_cnt,
+                'force_round': True,
                 'ma_window': ma_win, 
                 'bt_cond': bt_cond, 'bt_buy': bt_buy, 'bt_prof': bt_prof/100, 'bt_time': bt_time,
                 'md_buy': md_buy, 'md_prof': md_prof/100, 'md_time': md_time,
@@ -351,24 +294,19 @@ if uploaded_file is not None:
             res = backtest_engine_web(df, current_params)
             st.session_state.last_backtest_result = res
             
-            # 결과 요약
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("최종 자산", f"${res['Final']:,.0f}", f"{res['Return']}%")
             m2.metric("CAGR (연평균)", f"{res['CAGR']}%")
             m3.metric("MDD (최대낙폭)", f"{res['MDD']}%")
             m4.metric("승률 / 횟수", f"{res['WinRate']}%", f"{res['Trades']}회")
             
-            # 로그 다운로드
             c_d1, c_d2 = st.columns(2)
             csv_trade = res['TradeLog'].to_csv(index=False).encode('utf-8-sig')
             c_d1.download_button("📥 매매일지 다운로드", csv_trade, "trade_log.csv", "text/csv")
             csv_daily = res['DailyLog'].to_csv(index=False).encode('utf-8-sig')
             c_d2.download_button("📥 자산일지 다운로드", csv_daily, "daily_log.csv", "text/csv")
 
-            # 그래프
             st.line_chart(res['Series'])
-            
-            # 연도별 수익률 차트
             st.markdown("#### 📅 연도별 수익률")
             fig, ax = plt.subplots(figsize=(10, 4))
             colors = ['red' if x >= 0 else 'blue' for x in res['Yearly']]
@@ -381,113 +319,77 @@ if uploaded_file is not None:
                         ha='center', va='bottom' if height > 0 else 'top', fontsize=8)
             st.pyplot(fig)
 
-    # ==========================
-    # 탭 2: 몬테카를로 최적화 (UI 개선판)
-    # ==========================
+    # 탭 2: 몬테카를로
     with tab2:
         st.header("🎲 최적 파라미터 탐색기")
-        st.info("💡 범위를 입력하면 AI가 그 안에서 최고의 조합을 찾아냅니다. (입력 방식: 최소값 ~ 최대값)")
+        st.info("💡 범위를 입력하면 AI가 그 안에서 최고의 조합을 찾아냅니다.")
         
-        # --- 1. 기본 설정 (상단 배치) ---
         with st.container(border=True):
             c_base1, c_base2 = st.columns(2)
             with c_base1:
                 sim_count = st.number_input("🚀 시도 횟수 (Trial)", min_value=10, max_value=10000, value=100, step=10)
             with c_base2:
-                # 이평선 범위 (입력칸 2개로 분리)
                 st.write("📊 이평선 범위 (MA Window)")
                 c_ma1, c_ma2 = st.columns(2)
                 ma_min = c_ma1.number_input("최소 MA", 50, 300, 120)
                 ma_max = c_ma2.number_input("최대 MA", 50, 300, 250)
 
-        # --- 2. 모드별 범위 설정 (3단 컬럼 레이아웃) ---
         st.subheader("🎛️ 모드별 파라미터 범위 설정")
-        
         col_bt, col_md, col_cl = st.columns(3)
         
-        # [왼쪽] 바닥 모드 (Bottom)
         with col_bt:
             with st.container(border=True):
                 st.markdown("#### 📉 바닥 (Bottom)")
                 st.markdown("---")
-                
-                st.caption("기준 이격도 (Condition)")
                 bt_cond_min = st.number_input("B-이격 최소", 0.8, 1.0, 0.90, step=0.01)
                 bt_cond_max = st.number_input("B-이격 최대", 0.8, 1.0, 0.99, step=0.01)
-                
-                st.caption("매수점 (Buy %)")
                 c_b1, c_b2 = st.columns(2)
                 bt_buy_min = c_b1.number_input("B-매수 최소", -50.0, 50.0, 10.0, step=0.1)
                 bt_buy_max = c_b2.number_input("B-매수 최대", -50.0, 50.0, 20.0, step=0.1)
-                
-                st.caption("익절 목표 (Profit %)")
                 c_p1, c_p2 = st.columns(2)
                 bt_prof_min = c_p1.number_input("B-익절 최소", 0.0, 100.0, 1.0, step=0.1)
                 bt_prof_max = c_p2.number_input("B-익절 최대", 0.0, 100.0, 5.0, step=0.1)
-                
-                st.caption("존버일 (TimeCut)")
                 c_t1, c_t2 = st.columns(2)
                 bt_time_min = c_t1.number_input("B-존버 최소", 1, 100, 5)
                 bt_time_max = c_t2.number_input("B-존버 최대", 1, 100, 20)
 
-        # [가운데] 중간 모드 (Middle)
         with col_md:
             with st.container(border=True):
                 st.markdown("#### ➖ 중간 (Middle)")
                 st.markdown("---")
-                
-                st.caption("기준: (나머지 구간)")
-                st.info("바닥과 천장 사이 구간입니다.")
-                st.write("") # 여백용
+                st.info("바닥과 천장 사이 구간")
                 st.write("") 
-                
-                st.caption("매수점 (Buy %)")
+                st.write("") 
                 c_b1, c_b2 = st.columns(2)
                 md_buy_min = c_b1.number_input("M-매수 최소", -50.0, 50.0, -5.0, step=0.1)
                 md_buy_max = c_b2.number_input("M-매수 최대", -50.0, 50.0, 5.0, step=0.1)
-                
-                st.caption("익절 목표 (Profit %)")
                 c_p1, c_p2 = st.columns(2)
                 md_prof_min = c_p1.number_input("M-익절 최소", 0.0, 100.0, 3.0, step=0.1)
                 md_prof_max = c_p2.number_input("M-익절 최대", 0.0, 100.0, 10.0, step=0.1)
-                
-                st.caption("존버일 (TimeCut)")
                 c_t1, c_t2 = st.columns(2)
                 md_time_min = c_t1.number_input("M-존버 최소", 1, 100, 10)
                 md_time_max = c_t2.number_input("M-존버 최대", 1, 100, 30)
 
-        # [오른쪽] 천장 모드 (Ceiling)
         with col_cl:
             with st.container(border=True):
                 st.markdown("#### 📈 천장 (Ceiling)")
                 st.markdown("---")
-                
-                st.caption("기준 이격도 (Condition)")
                 cl_cond_min = st.number_input("C-이격 최소", 1.0, 1.5, 1.01, step=0.01)
                 cl_cond_max = st.number_input("C-이격 최대", 1.0, 1.5, 1.15, step=0.01)
-                
-                st.caption("매수점 (Buy %)")
                 c_b1, c_b2 = st.columns(2)
                 cl_buy_min = c_b1.number_input("C-매수 최소", -50.0, 50.0, -10.0, step=0.1)
                 cl_buy_max = c_b2.number_input("C-매수 최대", -50.0, 50.0, 5.0, step=0.1)
-                
-                st.caption("익절 목표 (Profit %)")
                 c_p1, c_p2 = st.columns(2)
                 cl_prof_min = c_p1.number_input("C-익절 최소", 0.0, 100.0, 1.0, step=0.1)
                 cl_prof_max = c_p2.number_input("C-익절 최대", 0.0, 100.0, 5.0, step=0.1)
-                
-                st.caption("존버일 (TimeCut)")
                 c_t1, c_t2 = st.columns(2)
                 cl_time_min = c_t1.number_input("C-존버 최소", 1, 100, 20)
                 cl_time_max = c_t2.number_input("C-존버 최대", 1, 100, 50)
 
         st.markdown("---")
-        
-        # 실행 버튼 영역
         col_btn1, col_btn2 = st.columns([1, 4])
         
         if col_btn1.button("🚀 최적화 시작", type="primary", use_container_width=True):
-            # 현재 설정 추가 (비교군)
             curr_res = backtest_engine_web(df, {
                 'start_date': start_date, 'end_date': end_date,
                 'initial_balance': balance, 'fee_rate': fee/100,
@@ -506,7 +408,6 @@ if uploaded_file is not None:
                               'Score': curr_res['CAGR'] - abs(curr_res['MDD']), 'Label': '🎯 현재 설정'})
                 st.session_state.opt_results.append(entry)
 
-            # 랜덤 시뮬레이션 실행
             prog = st.progress(0)
             status_text = st.empty()
             
@@ -514,31 +415,25 @@ if uploaded_file is not None:
                 st.session_state.trial_count += 1
                 status_text.text(f"⏳ 탐색 중... ({i+1}/{sim_count})")
                 
-                # 범위 내 랜덤 추출
                 r_params = {
                     'start_date': start_date, 'end_date': end_date,
                     'initial_balance': balance, 'fee_rate': fee/100,
                     'profit_rate': profit_rate/100.0, 'loss_rate': loss_rate/100.0,
                     'loc_range': loc_range, 'add_order_cnt': add_order_cnt,
                     'force_round': True,
-                    
                     'ma_window': np.random.randint(ma_min, ma_max + 1),
-                    
                     'bt_cond': round(np.random.uniform(bt_cond_min, bt_cond_max), 2),
                     'bt_buy': round(np.random.uniform(bt_buy_min, bt_buy_max), 1),
                     'bt_prof': round(np.random.uniform(bt_prof_min, bt_prof_max)/100, 4),
                     'bt_time': np.random.randint(bt_time_min, bt_time_max + 1),
-                    
                     'md_buy': round(np.random.uniform(md_buy_min, md_buy_max), 1),
                     'md_prof': round(np.random.uniform(md_prof_min, md_prof_max)/100, 4),
                     'md_time': np.random.randint(md_time_min, md_time_max + 1),
-                    
                     'cl_cond': round(np.random.uniform(cl_cond_min, cl_cond_max), 2),
                     'cl_buy': round(np.random.uniform(cl_buy_min, cl_buy_max), 1),
                     'cl_prof': round(np.random.uniform(cl_prof_min, cl_prof_max)/100, 4),
                     'cl_time': np.random.randint(cl_time_min, cl_time_max + 1),
                 }
-                
                 res = backtest_engine_web(df, r_params)
                 if res:
                     entry = r_params.copy()
@@ -549,9 +444,7 @@ if uploaded_file is not None:
                         'Label': '🎲 랜덤'
                     })
                     st.session_state.opt_results.append(entry)
-                
                 prog.progress((i+1)/sim_count)
-            
             status_text.text("✅ 탐색 완료!")
             time.sleep(1)
             status_text.empty()
@@ -562,7 +455,6 @@ if uploaded_file is not None:
             st.session_state.trial_count = 0
             st.rerun()
 
-        # 결과 리스트 출력
         if st.session_state.opt_results:
             st.markdown("### 🏆 Top 랭킹 (Score 기준)")
             res_df = pd.DataFrame(st.session_state.opt_results)
@@ -571,13 +463,10 @@ if uploaded_file is not None:
             res_df.index.name = 'Rank'
             
             show_cols = ['Label', 'Score', 'CAGR', 'MDD', 'ma_window', 'bt_buy', 'bt_prof']
-            
             def highlight_myset(s):
                 return ['background-color: #FFF8DC' if s['Label'] == '🎯 현재 설정' else '' for _ in s]
-            
             st.dataframe(res_df[show_cols].style.apply(highlight_myset, axis=1), height=300, use_container_width=True)
             
-            # 상세 분석 섹션
             st.markdown("---")
             c_sel1, c_sel2 = st.columns([3, 1])
             with c_sel1:
@@ -588,7 +477,7 @@ if uploaded_file is not None:
                 selected_opt = st.selectbox("🔍 결과 선택 (상세 파라미터 확인)", options)
             
             with c_sel2:
-                st.write("") # 줄맞춤용 공백
+                st.write("") 
                 st.write("")
                 if st.button("👉 심층 분석하기", type='primary'):
                     if selected_opt:
@@ -600,41 +489,25 @@ if uploaded_file is not None:
             if selected_opt:
                 rank_idx = int(selected_opt.split(']')[0].replace('[Rank ', ''))
                 sel_row = res_df.loc[rank_idx]
-                
-                # 코드 복사하기 좋게 출력
                 code_text = f"""# === [Rank {rank_idx}] {sel_row['Label']} 파라미터 ===
 # Score: {sel_row['Score']:.2f} | CAGR: {sel_row['CAGR']}% | MDD: {sel_row['MDD']}%
 
 MY_BEST_PARAMS = {{
     'ma_window': {sel_row['ma_window']},
-    
     # 바닥
-    'bt_cond': {sel_row['bt_cond']:.2f}, 
-    'bt_buy': {sel_row['bt_buy']}, 
-    'bt_prof': {sel_row['bt_prof']*100:.1f}, 
-    'bt_time': {sel_row['bt_time']},
-    
+    'bt_cond': {sel_row['bt_cond']:.2f}, 'bt_buy': {sel_row['bt_buy']}, 'bt_prof': {sel_row['bt_prof']*100:.1f}, 'bt_time': {sel_row['bt_time']},
     # 중간
-    'md_buy': {sel_row['md_buy']}, 
-    'md_prof': {sel_row['md_prof']*100:.1f}, 
-    'md_time': {sel_row['md_time']},
-    
+    'md_buy': {sel_row['md_buy']}, 'md_prof': {sel_row['md_prof']*100:.1f}, 'md_time': {sel_row['md_time']},
     # 천장
-    'cl_cond': {sel_row['cl_cond']:.2f}, 
-    'cl_buy': {sel_row['cl_buy']}, 
-    'cl_prof': {sel_row['cl_prof']*100:.1f}, 
-    'cl_time': {sel_row['cl_time']}
+    'cl_cond': {sel_row['cl_cond']:.2f}, 'cl_buy': {sel_row['cl_buy']}, 'cl_prof': {sel_row['cl_prof']*100:.1f}, 'cl_time': {sel_row['cl_time']}
 }}"""
                 st.code(code_text, language='python')
 
-    # ==========================
-    # 탭 3: 심층 분석
-    # ==========================
+    # 탭 3: 심층 분석 (디자인 통일)
     with tab3:
         st.subheader("🔬 전략 정밀 검진")
-        
         target = None
-        src = st.radio("분석 대상:", ["최근 백테스트 결과", "최적화에서 선택한 전략"])
+        src = st.radio("분석 대상:", ["최근 백테스트 결과", "최적화에서 선택한 전략"], horizontal=True)
         
         if src == "최근 백테스트 결과":
             if st.session_state.last_backtest_result:
@@ -650,11 +523,30 @@ MY_BEST_PARAMS = {{
         if target:
             res = backtest_engine_web(df, target)
             if res:
-                st.metric("CAGR", f"{res['CAGR']}%", f"MDD {res['MDD']}%")
+                k1, k2, k3, k4 = st.columns(4)
+                k1.metric("CAGR", f"{res['CAGR']}%")
+                k2.metric("MDD", f"{res['MDD']}%")
+                k3.metric("승률", f"{res['WinRate']}%")
+                k4.metric("거래횟수", f"{res['Trades']}회")
+                
+                st.markdown("#### 📅 연도별 수익률 상세")
+                
+                # 🟢 탭1과 동일한 디자인 적용
+                fig, ax = plt.subplots(figsize=(10, 4))
+                colors = ['red' if x >= 0 else 'blue' for x in res['Yearly']]
+                bars = ax.bar(res['Yearly'].index.year, res['Yearly'], color=colors, alpha=0.7)
+                ax.axhline(0, color='black', linewidth=0.8)
+                ax.grid(axis='y', linestyle='--', alpha=0.3)
+                for bar in bars:
+                    height = bar.get_height()
+                    ax.text(bar.get_x() + bar.get_width()/2., height, f'{height:.1f}%', 
+                            ha='center', va='bottom' if height > 0 else 'top', fontsize=8)
+                st.pyplot(fig)
+                
                 yearly_df = pd.DataFrame(res['Yearly'])
                 yearly_df.columns = ['Return %']
                 yearly_df.index = yearly_df.index.strftime('%Y')
-                st.bar_chart(yearly_df)
+                st.dataframe(yearly_df.style.background_gradient(cmap='RdBu_r', vmin=-50, vmax=50), use_container_width=True)
 
 else:
     st.info("👈 왼쪽 사이드바에서 데이터 파일을 먼저 업로드해주세요.")
