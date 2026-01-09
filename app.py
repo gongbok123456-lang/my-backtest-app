@@ -46,7 +46,7 @@ def backtest_engine_web(df, params):
     
     if len(df) == 0: return None
 
-    # 🟢 [수정됨] 날짜 인덱스 정의 (이 부분이 빠져서 오류가 났었습니다)
+    # 날짜 인덱스 정의
     dates = df.index
 
     # 2. 전략 파라미터
@@ -114,7 +114,7 @@ def backtest_engine_web(df, params):
             else:
                 stock[1] = days
         
-        # [투자금 갱신] (일별 합산 복리)
+        # [투자금 갱신] (일별 합산 복리 - 사용자 설정 반영)
         if daily_profit != 0:
             rate = params['profit_rate'] if daily_profit > 0 else params['loss_rate']
             seed_equity += daily_profit * rate
@@ -142,7 +142,6 @@ def backtest_engine_web(df, params):
         # 자산 기록
         current_eq = cash + sum([h[2]*today_close for h in holdings])
         daily_equity.append(current_eq)
-        # 🟢 [수정됨] 이제 dates[i]가 정상적으로 작동합니다.
         daily_dates.append(dates[i])
 
     # 4. 결과 지표 계산
@@ -186,9 +185,13 @@ with st.sidebar:
     st.header("⚙️ 기본 설정")
     uploaded_file = st.file_uploader("📂 데이터 파일 (CSV)", type=['csv'])
     
-    st.subheader("💰 자산 설정")
+    st.subheader("💰 자산 및 복리 설정")
     balance = st.number_input("초기 자본 ($)", value=10000)
     fee = st.number_input("수수료 (%)", value=0.07)
+    
+    # 🟢 [추가됨] 복리율 설정
+    profit_rate = st.slider("이익 복리율 (%)", 0, 100, 70, help="수익 발생 시 투자금에 재투자하는 비율")
+    loss_rate = st.slider("손실 복리율 (%)", 0, 100, 50, help="손실 발생 시 투자금에서 차감하는 비율")
     
     st.subheader("📈 기간 설정")
     start_date = st.date_input("시작일", pd.to_datetime("2010-01-01"))
@@ -236,7 +239,8 @@ if uploaded_file is not None:
             current_params = {
                 'start_date': start_date, 'end_date': end_date,
                 'initial_balance': balance, 'fee_rate': fee/100,
-                'ma_window': ma_win, 'profit_rate': 0.7, 'loss_rate': 0.5,
+                'profit_rate': profit_rate/100.0, 'loss_rate': loss_rate/100.0, # 🟢 적용
+                'ma_window': ma_win, 
                 'bt_cond': bt_cond, 'bt_buy': bt_buy, 'bt_prof': bt_prof/100, 'bt_time': bt_time,
                 'md_buy': md_buy, 'md_prof': md_prof/100, 'md_time': md_time,
                 'cl_cond': cl_cond, 'cl_buy': cl_buy, 'cl_prof': cl_prof/100, 'cl_time': cl_time,
@@ -300,11 +304,12 @@ if uploaded_file is not None:
         # 실행 버튼
         col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
         if col_btn1.button("🚀 최적화 시작"):
-            # 현재 탭1의 설정값도 비교군으로 추가
+            # 현재 탭1의 설정값도 비교군으로 추가 (복리율 적용됨)
             curr_res = backtest_engine_web(df, {
                 'start_date': start_date, 'end_date': end_date,
                 'initial_balance': balance, 'fee_rate': fee/100,
-                'ma_window': ma_win, 'profit_rate': 0.7, 'loss_rate': 0.5,
+                'profit_rate': profit_rate/100.0, 'loss_rate': loss_rate/100.0, # 🟢 적용
+                'ma_window': ma_win, 
                 'bt_cond': bt_cond, 'bt_buy': bt_buy, 'bt_prof': bt_prof/100, 'bt_time': bt_time,
                 'md_buy': md_buy, 'md_prof': md_prof/100, 'md_time': md_time,
                 'cl_cond': cl_cond, 'cl_buy': cl_buy, 'cl_prof': cl_prof/100, 'cl_time': cl_time,
@@ -322,7 +327,7 @@ if uploaded_file is not None:
                 r_params = {
                     'start_date': start_date, 'end_date': end_date,
                     'initial_balance': balance, 'fee_rate': fee/100,
-                    'profit_rate': 0.7, 'loss_rate': 0.5,
+                    'profit_rate': profit_rate/100.0, 'loss_rate': loss_rate/100.0, # 🟢 적용
                     'ma_window': np.random.randint(ma_range[0], ma_range[1]),
                     'bt_cond': np.random.uniform(0.90, 0.99),
                     'cl_cond': np.random.uniform(1.01, 1.15),
@@ -406,7 +411,6 @@ MY_BEST_PARAMS = {{
                 # 심층 분석으로 보내기 위한 버튼 (Session State 활용)
                 if st.button("이 전략으로 심층 분석하기 ➡️"):
                     sel_row_dict = sel_row.to_dict()
-                    # % 단위 복원 등 전처리 필요하면 여기서 수행 (이미 decimal 상태)
                     st.session_state.target_analysis_params = sel_row_dict
                     st.success("심층 분석 탭으로 이동하세요!")
 
