@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import time
+import io
 
 # --- [페이지 설정] ---
 st.set_page_config(page_title="쪼꼬야옹 백테스트 연구소", page_icon="📈", layout="wide")
@@ -46,7 +47,6 @@ def backtest_engine_web(df, params):
     
     if len(df) == 0: return None
 
-    # 날짜 인덱스 정의
     dates = df.index
 
     # 2. 전략 파라미터
@@ -60,7 +60,10 @@ def backtest_engine_web(df, params):
     seed_equity = cash
     holdings = []
     
-    # 기록용
+    # 기록용 로그 리스트
+    trade_log = [] # 매매일지
+    daily_log = [] # 자산일지
+    
     daily_equity = []
     daily_dates = []
     trade_count = 0
@@ -82,20 +85,26 @@ def backtest_engine_web(df, params):
         
         conf = strategy[phase]
         
+        # 🟢 [로직 수정] 시드 계산을 매도 전(장 시작 시점)에 수행하여 '익일 반영' 구현
+        target_seed = int((seed_equity / MAX_SLOTS) + 0.5)
+
         # [매도]
         tiers_sold = set()
         daily_profit = 0
         
         for stock in holdings[:]:
-            buy_p, days, qty, mode, tier, _ = stock
+            buy_p, days, qty, mode, tier, buy_dt = stock
             s_conf = strategy[mode]
             days += 1
             target_p = excel_round_up(buy_p * (1 + s_conf['prof']), 2)
             
             is_sold = False
+            reason = ""
             # 손절일(TimeCut) 또는 익절
-            if days >= s_conf['time'] or today_close >= target_p:
-                is_sold = True
+            if days >= s_conf['time']: 
+                is_sold = True; reason = f"TimeCut({days}d)"
+            elif today_close >= target_p: 
+                is_sold = True; reason = "Profit"
             
             if is_sold:
                 holdings.remove(stock)
@@ -111,16 +120,21 @@ def backtest_engine_web(df, params):
                 
                 trade_count += 1
                 if real_profit > 0: win_count += 1
+
+                # 매매일지 기록
+                trade_log.append({
+                    'Date': dates[i], 'Type': 'Sell', 'Tier': tier, 'Phase': mode,
+                    'Price': today_close, 'Qty': qty, 'Profit': round(real_profit, 2), 'Reason': reason
+                })
             else:
                 stock[1] = days
         
-        # [투자금 갱신] (일별 합산 복리 - 사용자 설정 반영)
+        # [투자금 갱신] (일별 합산 복리)
         if daily_profit != 0:
             rate = params['profit_rate'] if daily_profit > 0 else params['loss_rate']
             seed_equity += daily_profit * rate
             
-        # [매수]
-        target_seed = int((seed_equity / MAX_SLOTS) + 0.5)
+        # [매수] (위에서 계산한 target_seed 사용)
         prev_c = row['Prev_Close'] if not pd.isna(row['Prev_Close']) else today_close
         target_p = excel_round_down(prev_c * (1 + conf['buy'] / 100), 2)
         bet = min(target_seed, cash)
@@ -136,33 +150,42 @@ def backtest_engine_web(df, params):
                 max_q = int(cash / (today_close * (1+params['fee_rate'])))
                 real_q = min(qty, max_q)
                 if real_q > 0:
-                    cash -= today_close * real_q * (1+params['fee_rate'])
+                    buy_amt = today_close * real_q * (1+params['fee_rate'])
+                    cash -= buy_amt
                     holdings.append([today_close, 0, real_q, phase, new_tier, dates[i]])
+                    
+                    # 매매일지 기록
+                    trade_log.append({
+                        'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase,
+                        'Price': today_close, 'Qty': real_q, 'Profit': 0, 'Reason': 'LOC'
+                    })
         
         # 자산 기록
         current_eq = cash + sum([h[2]*today_close for h in holdings])
         daily_equity.append(current_eq)
         daily_dates.append(dates[i])
+        
+        # 일별 로그 기록
+        daily_log.append({
+            'Date': dates[i], 'Equity': round(current_eq, 2), 
+            'Cash': round(cash, 2), 'SeedEquity': round(seed_equity, 2), 
+            'Holdings': len(holdings)
+        })
 
     # 4. 결과 지표 계산
     final_equity = daily_equity[-1]
     total_ret_pct = (final_equity / params['initial_balance'] - 1) * 100
     
-    # CAGR
     days_total = (dates[-1] - dates[0]).days
     cagr = ((final_equity / params['initial_balance']) ** (365/days_total) - 1) * 100 if days_total > 0 else 0
     
-    # MDD
     eq_series = pd.Series(daily_equity, index=daily_dates)
     peak = eq_series.cummax()
     mdd = ((eq_series / peak - 1) * 100).min()
     
-    # 승률
     win_rate = (win_count / trade_count * 100) if trade_count > 0 else 0
     
-    # 연도별 수익률 (YE 경고 해결)
     yearly_ret = eq_series.resample('YE').last().pct_change() * 100
-    # 첫해 수익률 보정
     yearly_ret.iloc[0] = (eq_series.resample('YE').last().iloc[0] / params['initial_balance'] - 1) * 100
 
     return {
@@ -174,7 +197,9 @@ def backtest_engine_web(df, params):
         'Trades': trade_count,
         'Series': eq_series,
         'Yearly': yearly_ret,
-        'Params': params
+        'Params': params,
+        'TradeLog': pd.DataFrame(trade_log), # 로그 추가
+        'DailyLog': pd.DataFrame(daily_log)  # 로그 추가
     }
 
 # --- [UI 구성] ---
@@ -189,9 +214,8 @@ with st.sidebar:
     balance = st.number_input("초기 자본 ($)", value=10000)
     fee = st.number_input("수수료 (%)", value=0.07)
     
-    # 🟢 [추가됨] 복리율 설정
-    profit_rate = st.slider("이익 복리율 (%)", 0, 100, 70, help="수익 발생 시 투자금에 재투자하는 비율")
-    loss_rate = st.slider("손실 복리율 (%)", 0, 100, 50, help="손실 발생 시 투자금에서 차감하는 비율")
+    profit_rate = st.slider("이익 복리율 (%)", 0, 100, 70)
+    loss_rate = st.slider("손실 복리율 (%)", 0, 100, 50)
     
     st.subheader("📈 기간 설정")
     start_date = st.date_input("시작일", pd.to_datetime("2010-01-01"))
@@ -199,7 +223,6 @@ with st.sidebar:
 
 # 2. 메인 화면 로직
 if uploaded_file is not None:
-    # 데이터 로드
     df = pd.read_csv(uploaded_file, parse_dates=['Date'])
     df.set_index('Date', inplace=True)
     df.sort_index(inplace=True)
@@ -239,7 +262,7 @@ if uploaded_file is not None:
             current_params = {
                 'start_date': start_date, 'end_date': end_date,
                 'initial_balance': balance, 'fee_rate': fee/100,
-                'profit_rate': profit_rate/100.0, 'loss_rate': loss_rate/100.0, # 🟢 적용
+                'profit_rate': profit_rate/100.0, 'loss_rate': loss_rate/100.0,
                 'ma_window': ma_win, 
                 'bt_cond': bt_cond, 'bt_buy': bt_buy, 'bt_prof': bt_prof/100, 'bt_time': bt_time,
                 'md_buy': md_buy, 'md_prof': md_prof/100, 'md_time': md_time,
@@ -247,7 +270,7 @@ if uploaded_file is not None:
                 'label': '🎯 현재 설정'
             }
             res = backtest_engine_web(df, current_params)
-            st.session_state.last_backtest_result = res # 분석 탭을 위해 저장
+            st.session_state.last_backtest_result = res
             
             # 결과 요약
             m1, m2, m3, m4 = st.columns(4)
@@ -256,6 +279,17 @@ if uploaded_file is not None:
             m3.metric("MDD (최대낙폭)", f"{res['MDD']}%")
             m4.metric("승률 / 횟수", f"{res['WinRate']}%", f"{res['Trades']}회")
             
+            # 🟢 [추가됨] 로그 다운로드 버튼
+            c_d1, c_d2 = st.columns(2)
+            
+            # 매매일지 다운로드
+            csv_trade = res['TradeLog'].to_csv(index=False).encode('utf-8-sig')
+            c_d1.download_button("📥 매매일지 다운로드 (Trade Log)", csv_trade, "trade_log.csv", "text/csv")
+            
+            # 자산일지 다운로드
+            csv_daily = res['DailyLog'].to_csv(index=False).encode('utf-8-sig')
+            c_d2.download_button("📥 자산일지 다운로드 (Daily Log)", csv_daily, "daily_log.csv", "text/csv")
+
             # 그래프
             st.line_chart(res['Series'])
             
@@ -266,7 +300,6 @@ if uploaded_file is not None:
             bars = ax.bar(res['Yearly'].index.year, res['Yearly'], color=colors, alpha=0.7)
             ax.axhline(0, color='black', linewidth=0.8)
             ax.grid(axis='y', linestyle='--', alpha=0.3)
-            # 값 표시
             for bar in bars:
                 height = bar.get_height()
                 ax.text(bar.get_x() + bar.get_width()/2., height, f'{height:.1f}%', 
@@ -280,7 +313,6 @@ if uploaded_file is not None:
         st.subheader("🎲 최적 파라미터 탐색")
         st.info("💡 범위를 설정하고 '최적화 시작'을 누르면 결과가 누적됩니다.")
         
-        # 범위 설정 UI
         c1, c2 = st.columns(2)
         with c1:
             sim_count = st.slider("시도 횟수", 10, 1000, 100, step=10)
@@ -301,18 +333,17 @@ if uploaded_file is not None:
             cl_prof_r = st.slider("천장 익절", 0.0, 20.0, (2.0, 8.0))
             cl_time_r = st.slider("천장 존버", 1, 50, (5, 30))
 
-        # 실행 버튼
         col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
         if col_btn1.button("🚀 최적화 시작"):
-            # 현재 탭1의 설정값도 비교군으로 추가 (복리율 적용됨)
             curr_res = backtest_engine_web(df, {
                 'start_date': start_date, 'end_date': end_date,
                 'initial_balance': balance, 'fee_rate': fee/100,
-                'profit_rate': profit_rate/100.0, 'loss_rate': loss_rate/100.0, # 🟢 적용
+                'profit_rate': profit_rate/100.0, 'loss_rate': loss_rate/100.0,
                 'ma_window': ma_win, 
                 'bt_cond': bt_cond, 'bt_buy': bt_buy, 'bt_prof': bt_prof/100, 'bt_time': bt_time,
                 'md_buy': md_buy, 'md_prof': md_prof/100, 'md_time': md_time,
                 'cl_cond': cl_cond, 'cl_buy': cl_buy, 'cl_prof': cl_prof/100, 'cl_time': cl_time,
+                'label': '🎯 현재 설정'
             })
             if curr_res:
                 entry = curr_res['Params'].copy()
@@ -320,14 +351,13 @@ if uploaded_file is not None:
                               'Score': curr_res['CAGR'] - abs(curr_res['MDD']), 'Label': '🎯 현재 설정'})
                 st.session_state.opt_results.append(entry)
 
-            # 랜덤 시뮬레이션
             prog = st.progress(0)
             for i in range(sim_count):
                 st.session_state.trial_count += 1
                 r_params = {
                     'start_date': start_date, 'end_date': end_date,
                     'initial_balance': balance, 'fee_rate': fee/100,
-                    'profit_rate': profit_rate/100.0, 'loss_rate': loss_rate/100.0, # 🟢 적용
+                    'profit_rate': profit_rate/100.0, 'loss_rate': loss_rate/100.0,
                     'ma_window': np.random.randint(ma_range[0], ma_range[1]),
                     'bt_cond': np.random.uniform(0.90, 0.99),
                     'cl_cond': np.random.uniform(1.01, 1.15),
@@ -363,31 +393,25 @@ if uploaded_file is not None:
             st.session_state.trial_count = 0
             st.rerun()
 
-        # 결과 표시
         if st.session_state.opt_results:
             res_df = pd.DataFrame(st.session_state.opt_results)
-            # Score 기준 정렬
             res_df = res_df.sort_values('Score', ascending=False).reset_index(drop=True)
             res_df.index += 1
             res_df.index.name = 'Rank'
             
-            # 메인 테이블 출력
             show_cols = ['Label', 'Score', 'CAGR', 'MDD', 'ma_window', 'bt_buy', 'bt_prof']
             st.markdown("##### 🏆 Top 랭킹 (Score순)")
             
-            # 스타일링: 내 설정 강조
             def highlight_myset(s):
                 return ['background-color: #FFF8DC' if s['Label'] == '🎯 현재 설정' else '' for _ in s]
             
             st.dataframe(res_df[show_cols].style.apply(highlight_myset, axis=1), height=300)
             
-            # 상세 보기
             st.markdown("---")
             st.subheader("🔍 상세 파라미터 보기")
             
-            # 선택 박스 생성
             options = []
-            for idx, row in res_df.head(30).iterrows(): # Top 30만 표시
+            for idx, row in res_df.head(30).iterrows():
                 lbl = f"[Rank {idx}] {row['Label']} (Score: {row['Score']:.2f} | CAGR: {row['CAGR']}%)"
                 options.append(lbl)
                 
@@ -408,7 +432,6 @@ MY_BEST_PARAMS = {{
 }}"""
                 st.code(code_text, language='python')
                 
-                # 심층 분석으로 보내기 위한 버튼 (Session State 활용)
                 if st.button("이 전략으로 심층 분석하기 ➡️"):
                     sel_row_dict = sel_row.to_dict()
                     st.session_state.target_analysis_params = sel_row_dict
@@ -421,8 +444,6 @@ MY_BEST_PARAMS = {{
         st.subheader("🔬 전략 정밀 검진")
         
         target = None
-        
-        # 분석 대상 선택
         src = st.radio("분석 대상:", ["최근 백테스트 결과", "최적화에서 선택한 전략"])
         
         if src == "최근 백테스트 결과":
@@ -430,15 +451,13 @@ MY_BEST_PARAMS = {{
                 target = st.session_state.last_backtest_result['Params']
             else:
                 st.warning("⚠️ 백테스트 탭에서 먼저 '실행'을 눌러주세요.")
-                
-        else: # 최적화 선택 전략
+        else: 
             if 'target_analysis_params' in st.session_state:
                 target = st.session_state.target_analysis_params
             else:
                 st.warning("⚠️ 최적화 탭에서 전략을 선택하고 '심층 분석하기' 버튼을 눌러주세요.")
         
         if target:
-            # 분석 실행
             res = backtest_engine_web(df, target)
             
             if res:
@@ -450,7 +469,6 @@ MY_BEST_PARAMS = {{
                 
                 st.markdown("#### 📅 연도별 수익률 상세")
                 
-                # 연도별 표 + 그래프
                 yearly_df = pd.DataFrame(res['Yearly'])
                 yearly_df.columns = ['Return %']
                 yearly_df.index = yearly_df.index.strftime('%Y')
