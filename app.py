@@ -46,6 +46,9 @@ def backtest_engine_web(df, params):
     
     if len(df) == 0: return None
 
+    # 🟢 [수정됨] 날짜 인덱스 정의 (이 부분이 빠져서 오류가 났었습니다)
+    dates = df.index
+
     # 2. 전략 파라미터
     strategy = {
         'Bottom':  {'cond': params['bt_cond'], 'buy': params['bt_buy'], 'prof': params['bt_prof'], 'time': params['bt_time']},
@@ -139,6 +142,7 @@ def backtest_engine_web(df, params):
         # 자산 기록
         current_eq = cash + sum([h[2]*today_close for h in holdings])
         daily_equity.append(current_eq)
+        # 🟢 [수정됨] 이제 dates[i]가 정상적으로 작동합니다.
         daily_dates.append(dates[i])
 
     # 4. 결과 지표 계산
@@ -157,7 +161,7 @@ def backtest_engine_web(df, params):
     # 승률
     win_rate = (win_count / trade_count * 100) if trade_count > 0 else 0
     
-    # 연도별 수익률
+    # 연도별 수익률 (YE 경고 해결)
     yearly_ret = eq_series.resample('YE').last().pct_change() * 100
     # 첫해 수익률 보정
     yearly_ret.iloc[0] = (eq_series.resample('YE').last().iloc[0] / params['initial_balance'] - 1) * 100
