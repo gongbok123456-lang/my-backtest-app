@@ -26,6 +26,7 @@ def excel_round_down(n, decimals=0):
     multiplier = 10 ** decimals
     return math.floor(n * multiplier + 1e-9) / multiplier
 
+# Colab과 동일한 LOC 수량 계산 함수
 def calculate_loc_quantity(seed_amount, order_price, close_price, buy_range, max_add_orders):
     if seed_amount is None or order_price is None or order_price <= 0:
         return 0
@@ -390,6 +391,9 @@ if uploaded_file is not None:
         col_btn1, col_btn2 = st.columns([1, 4])
         
         if col_btn1.button("🚀 최적화 시작", type="primary", use_container_width=True):
+            # 🟢 [수정됨] 기존 결과 리스트에서 '🎯 현재 설정' 제거 (중복 방지)
+            st.session_state.opt_results = [r for r in st.session_state.opt_results if r.get('Label') != '🎯 현재 설정']
+
             curr_res = backtest_engine_web(df, {
                 'start_date': start_date, 'end_date': end_date,
                 'initial_balance': balance, 'fee_rate': fee/100,
@@ -494,16 +498,13 @@ if uploaded_file is not None:
 
 MY_BEST_PARAMS = {{
     'ma_window': {sel_row['ma_window']},
-    # 바닥
     'bt_cond': {sel_row['bt_cond']:.2f}, 'bt_buy': {sel_row['bt_buy']}, 'bt_prof': {sel_row['bt_prof']*100:.1f}, 'bt_time': {sel_row['bt_time']},
-    # 중간
     'md_buy': {sel_row['md_buy']}, 'md_prof': {sel_row['md_prof']*100:.1f}, 'md_time': {sel_row['md_time']},
-    # 천장
     'cl_cond': {sel_row['cl_cond']:.2f}, 'cl_buy': {sel_row['cl_buy']}, 'cl_prof': {sel_row['cl_prof']*100:.1f}, 'cl_time': {sel_row['cl_time']}
 }}"""
                 st.code(code_text, language='python')
 
-    # 탭 3: 심층 분석 (디자인 통일)
+    # 탭 3: 심층 분석
     with tab3:
         st.subheader("🔬 전략 정밀 검진")
         target = None
@@ -531,7 +532,6 @@ MY_BEST_PARAMS = {{
                 
                 st.markdown("#### 📅 연도별 수익률 상세")
                 
-                # 🟢 탭1과 동일한 디자인 적용
                 fig, ax = plt.subplots(figsize=(10, 4))
                 colors = ['red' if x >= 0 else 'blue' for x in res['Yearly']]
                 bars = ax.bar(res['Yearly'].index.year, res['Yearly'], color=colors, alpha=0.7)
