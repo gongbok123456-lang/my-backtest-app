@@ -204,7 +204,7 @@ def backtest_engine_web(df, params):
 
     for i in range(len(df)):
         row = df.iloc[i]
-	date = row.name
+        date = row.name
         today_close = row['SOXL']
         if pd.isna(today_close) or today_close <= 0: continue
         if params.get('force_round', True): today_close = round(today_close, 2)
