@@ -8,8 +8,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # --- [기본 설정 값] ---
-# 사용자 구글 시트 주소 (필요시 수정하세요)
-DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1dK11y5aTIhDGfpMduNsuSgTDlDoPo-OF6uE5FIePXVg/edit?gid=453499510#gid=453499510"
+DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1dK11y5aTIhDGfpMduNsuSgTDlDoPo-OF6uE5FIePXVg/edit"
 
 # --- [페이지 설정] ---
 st.set_page_config(page_title="쪼꼬야옹 백테스트 연구소", page_icon="📈", layout="wide")
@@ -22,11 +21,58 @@ if 'trial_count' not in st.session_state:
 if 'last_backtest_result' not in st.session_state:
     st.session_state.last_backtest_result = None
 
-# --- [구글 시트 데이터 로드 함수 (자동 컬럼 찾기)] ---
+# --- [유틸리티 함수 (안전장치 추가)] ---
+def excel_round_up(n, decimals=0):
+    if pd.isna(n) or n == np.inf or n == -np.inf: return 0
+    multiplier = 10 ** decimals
+    return math.ceil(n * multiplier - 1e-9) / multiplier
+
+def excel_round_down(n, decimals=0):
+    if pd.isna(n) or n == np.inf or n == -np.inf: return 0
+    multiplier = 10 ** decimals
+    return math.floor(n * multiplier + 1e-9) / multiplier
+
+def calculate_loc_quantity(seed_amount, order_price, close_price, buy_range, max_add_orders):
+    if seed_amount is None or order_price is None or order_price <= 0: return 0
+    
+    # 안전장치
+    if pd.isna(seed_amount) or pd.isna(order_price) or pd.isna(close_price): return 0
+
+    base_qty = int(seed_amount / order_price)
+    multiplier = (1 + buy_range) if buy_range <= 0 else (1 - buy_range)
+    bot_price = excel_round_down(order_price * multiplier, 2)
+
+    fix_qty = 0
+    if bot_price > 0:
+        qty_at_bot = seed_amount / bot_price
+        qty_at_order = seed_amount / order_price
+        fix_qty = int((qty_at_bot - qty_at_order) / max_add_orders)
+    if fix_qty < 0: fix_qty = 0
+
+    final_qty = 0
+    
+    # Step 0
+    if base_qty > 0:
+        implied_price = seed_amount / base_qty
+        if implied_price >= close_price and implied_price >= bot_price:
+            final_qty += base_qty
+
+    # Step 1 ~ Max
+    for i in range(1, max_add_orders + 1):
+        step_qty = fix_qty
+        current_cum_qty = base_qty + (i * step_qty)
+        if current_cum_qty <= 0: continue
+        
+        implied_price = seed_amount / current_cum_qty
+        if implied_price >= close_price and implied_price >= bot_price:
+            final_qty += step_qty
+
+    return final_qty
+
+# --- [구글 시트 데이터 로드 함수] ---
 @st.cache_data(ttl=600)
 def load_data_from_gsheet(url):
     try:
-        # 1. 인증 및 시트 연결
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds_dict = dict(st.secrets["gcp_service_account"])
         
@@ -38,92 +84,56 @@ def load_data_from_gsheet(url):
 
         sheet = client.open_by_url(url)
         worksheet = sheet.get_worksheet(0)
-        
-        # 2. 전체 데이터 가져오기
         rows = worksheet.get_all_values()
+        
         if not rows:
             st.error("❌ 시트가 비어있습니다.")
             return None
 
-        # 3. 헤더 위치 찾기 (QQQ, SOXL 위치 자동 탐색)
-        # 보통 1~5행 사이에 헤더가 있으므로 그 안에서 찾습니다.
-        header_row_idx = -1
-        idx_qqq = -1
-        idx_soxl = -1
+        raw_df = pd.DataFrame(rows)
         
-        for i, row in enumerate(rows[:10]): # 상위 10줄만 검색
-            if "QQQ" in row and "SOXL" in row:
-                header_row_idx = i
-                idx_qqq = row.index("QQQ")
-                idx_soxl = row.index("SOXL")
-                break
-        
-        if header_row_idx == -1:
-            st.error("❌ 시트에서 'QQQ'와 'SOXL' 헤더를 찾을 수 없습니다.")
+        # 데이터 추출 (5행부터, G/I/L열)
+        try:
+            df = raw_df.iloc[4:, [6, 8, 11]].copy()
+            df.columns = ['Date', 'QQQ', 'SOXL']
+        except IndexError:
+            st.error("❌ 시트 열 개수 부족 (G, I, L열 확인)")
             return None
 
-        # 4. 데이터 추출 (헤더 2줄 아래부터 데이터 시작)
-        # QQQ: Header(Date), Header+1(Close)
-        # SOXL: Header(Date), Header+1(Close)
-        data_start_idx = header_row_idx + 2 
-        
-        # 필요한 열만 뽑아서 DataFrame 만들기
-        # Date는 QQQ쪽 Date를 사용 (Index: idx_qqq)
-        # QQQ Close (Index: idx_qqq + 1)
-        # SOXL Close (Index: idx_soxl + 1)
-        
-        extracted_data = []
-        for row in rows[data_start_idx:]:
-            if len(row) > max(idx_qqq, idx_soxl) + 1: # 행 길이가 충분한지 확인
-                try:
-                    d = row[idx_qqq] # Date
-                    q = row[idx_qqq + 1] # QQQ
-                    s = row[idx_soxl + 1] # SOXL
-                    extracted_data.append([d, q, s])
-                except IndexError:
-                    continue
-
-        df = pd.DataFrame(extracted_data, columns=['Date', 'QQQ', 'SOXL'])
-
-        # 5. 데이터 전처리 (날짜/숫자 변환)
-        # 날짜 문자열 정리
+        # 날짜 전처리
         df['Date'] = df['Date'].astype(str).str.strip()
-        df = df[df['Date'] != ''] # 빈 날짜 제거
-        df['Date'] = df['Date'].str.replace(r'\(.*?\)', '', regex=True).str.strip() # (월) 제거
-        df['Date'] = df['Date'].str.replace('.', '-') # 포맷 통일
+        df = df[df['Date'] != '']
+        df['Date'] = df['Date'].str.replace(r'\(.*?\)', '', regex=True).str.strip()
+        df['Date'] = df['Date'].str.replace('.', '-')
         
-        # 연도 보정 (10 -> 2010)
         def fix_year(date_str):
             try:
                 parts = date_str.split('-')
                 if len(parts) == 3:
                     y, m, d = parts
-                    if len(y) == 2:
-                        return f"20{y}-{m}-{d}"
+                    if len(y) == 2: return f"20{y}-{m}-{d}"
                 return date_str
-            except:
-                return date_str
+            except: return date_str
 
         df['Date'] = df['Date'].apply(fix_year)
         df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
         
-        # 유효한 데이터만 남기기
+        # 🟢 [중요] 날짜 없는 행 삭제
         df = df.dropna(subset=['Date'])
         
-        # 숫자 변환 (콤마, 달러 제거)
+        # 숫자 변환
         for col in ['QQQ', 'SOXL']:
             df[col] = df[col].astype(str).str.replace(',', '').str.replace('$', '')
             df[col] = pd.to_numeric(df[col], errors='coerce')
             
+        # 🟢 [중요] 가격 데이터가 없는(NaN) 행 삭제 (에러 원인 차단)
+        df = df.dropna(subset=['QQQ', 'SOXL'])
+        
         df.set_index('Date', inplace=True)
         df.sort_index(inplace=True)
         
-        # 디버깅용: 데이터가 잘 로드되었는지 확인
-        if len(df) > 0:
-            st.sidebar.success(f"✅ 데이터 로드 성공! ({len(df)}행)")
-            # st.sidebar.dataframe(df.head()) # 필요시 주석 해제하여 확인
-        else:
-            st.error("❌ 유효한 데이터가 0개입니다.")
+        if len(df) == 0:
+            st.error("❌ 유효한 데이터가 없습니다.")
             return None
             
         return df
@@ -131,43 +141,6 @@ def load_data_from_gsheet(url):
     except Exception as e:
         st.error(f"구글 시트 로드 실패: {e}")
         return None
-
-# --- [유틸리티 함수] ---
-def excel_round_up(n, decimals=0):
-    multiplier = 10 ** decimals
-    return math.ceil(n * multiplier - 1e-9) / multiplier
-
-def excel_round_down(n, decimals=0):
-    multiplier = 10 ** decimals
-    return math.floor(n * multiplier + 1e-9) / multiplier
-
-def calculate_loc_quantity(seed_amount, order_price, close_price, buy_range, max_add_orders):
-    if seed_amount is None or order_price is None or order_price <= 0:
-        return 0
-    base_qty = int(seed_amount / order_price)
-    multiplier = (1 + buy_range) if buy_range <= 0 else (1 - buy_range)
-    bot_price = math.floor(order_price * multiplier * 100 + 1e-9) / 100
-    if bot_price > 0:
-        qty_at_bot_float = seed_amount / bot_price
-        qty_at_order_float = seed_amount / order_price
-        fix_qty = int((qty_at_bot_float - qty_at_order_float) / max_add_orders)
-    else:
-        fix_qty = 0
-    if fix_qty < 0: fix_qty = 0
-    final_qty = 0
-    current_cum_qty = base_qty
-    if current_cum_qty > 0:
-        implied_price = seed_amount / current_cum_qty
-        if implied_price >= close_price and implied_price >= bot_price:
-            final_qty += base_qty
-    for i in range(1, max_add_orders + 1):
-        step_qty = fix_qty
-        current_cum_qty = base_qty + (i * step_qty)
-        if current_cum_qty <= 0: continue
-        implied_price = seed_amount / current_cum_qty
-        if implied_price >= close_price and implied_price >= bot_price:
-            final_qty += step_qty
-    return final_qty
 
 # --- [백테스트 엔진] ---
 def backtest_engine_web(df, params):
@@ -213,6 +186,11 @@ def backtest_engine_web(df, params):
     for i in range(len(df)):
         row = df.iloc[i]
         today_close = row['SOXL']
+        
+        # 🟢 [안전장치] 가격이 비어있으면 건너뛰기
+        if pd.isna(today_close) or today_close <= 0:
+            continue
+
         if params.get('force_round', True): today_close = round(today_close, 2)
 
         disp = row['Basis_Disp'] if not pd.isna(row['Basis_Disp']) else 1.0
@@ -265,6 +243,10 @@ def backtest_engine_web(df, params):
             seed_equity += daily_net_profit_sum * rate
             
         prev_c = row['Prev_Close'] if not pd.isna(row['Prev_Close']) else today_close
+        
+        # 🟢 [안전장치] 전일 종가가 비정상적이면 오늘 종가로 대체
+        if pd.isna(prev_c): prev_c = today_close
+            
         target_p = excel_round_down(prev_c * (1 + conf['buy'] / 100), 2)
         bet = min(target_seed_float, cash)
         if bet < 10: bet = 0
@@ -307,6 +289,8 @@ def backtest_engine_web(df, params):
             'Cash': round(cash, 2), 'SeedEquity': round(seed_equity, 2), 
             'Holdings': len(holdings)
         })
+
+    if not daily_equity: return None
 
     final_equity = daily_equity[-1]
     total_ret_pct = (final_equity / params['initial_balance'] - 1) * 100
@@ -401,32 +385,35 @@ if sheet_url:
                     'label': '🎯 현재 설정'
                 }
                 res = backtest_engine_web(df, current_params)
-                st.session_state.last_backtest_result = res
-                
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("최종 자산", f"${res['Final']:,.0f}", f"{res['Return']}%")
-                m2.metric("CAGR (연평균)", f"{res['CAGR']}%")
-                m3.metric("MDD (최대낙폭)", f"{res['MDD']}%")
-                m4.metric("승률 / 횟수", f"{res['WinRate']}%", f"{res['Trades']}회")
-                
-                c_d1, c_d2 = st.columns(2)
-                csv_trade = res['TradeLog'].to_csv(index=False).encode('utf-8-sig')
-                c_d1.download_button("📥 매매일지 다운로드", csv_trade, "trade_log.csv", "text/csv")
-                csv_daily = res['DailyLog'].to_csv(index=False).encode('utf-8-sig')
-                c_d2.download_button("📥 자산일지 다운로드", csv_daily, "daily_log.csv", "text/csv")
+                if res:
+                    st.session_state.last_backtest_result = res
+                    
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("최종 자산", f"${res['Final']:,.0f}", f"{res['Return']}%")
+                    m2.metric("CAGR (연평균)", f"{res['CAGR']}%")
+                    m3.metric("MDD (최대낙폭)", f"{res['MDD']}%")
+                    m4.metric("승률 / 횟수", f"{res['WinRate']}%", f"{res['Trades']}회")
+                    
+                    c_d1, c_d2 = st.columns(2)
+                    csv_trade = res['TradeLog'].to_csv(index=False).encode('utf-8-sig')
+                    c_d1.download_button("📥 매매일지 다운로드", csv_trade, "trade_log.csv", "text/csv")
+                    csv_daily = res['DailyLog'].to_csv(index=False).encode('utf-8-sig')
+                    c_d2.download_button("📥 자산일지 다운로드", csv_daily, "daily_log.csv", "text/csv")
 
-                st.line_chart(res['Series'])
-                st.markdown("#### 📅 연도별 수익률")
-                fig, ax = plt.subplots(figsize=(10, 4))
-                colors = ['red' if x >= 0 else 'blue' for x in res['Yearly']]
-                bars = ax.bar(res['Yearly'].index.year, res['Yearly'], color=colors, alpha=0.7)
-                ax.axhline(0, color='black', linewidth=0.8)
-                ax.grid(axis='y', linestyle='--', alpha=0.3)
-                for bar in bars:
-                    height = bar.get_height()
-                    ax.text(bar.get_x() + bar.get_width()/2., height, f'{height:.1f}%', 
-                            ha='center', va='bottom' if height > 0 else 'top', fontsize=8)
-                st.pyplot(fig)
+                    st.line_chart(res['Series'])
+                    st.markdown("#### 📅 연도별 수익률")
+                    fig, ax = plt.subplots(figsize=(10, 4))
+                    colors = ['red' if x >= 0 else 'blue' for x in res['Yearly']]
+                    bars = ax.bar(res['Yearly'].index.year, res['Yearly'], color=colors, alpha=0.7)
+                    ax.axhline(0, color='black', linewidth=0.8)
+                    ax.grid(axis='y', linestyle='--', alpha=0.3)
+                    for bar in bars:
+                        height = bar.get_height()
+                        ax.text(bar.get_x() + bar.get_width()/2., height, f'{height:.1f}%', 
+                                ha='center', va='bottom' if height > 0 else 'top', fontsize=8)
+                    st.pyplot(fig)
+                else:
+                    st.error("백테스트 결과가 없습니다. (날짜 범위 또는 데이터 확인 필요)")
 
         # 탭 2: 몬테카를로
         with tab2:
@@ -499,7 +486,6 @@ if sheet_url:
             col_btn1, col_btn2 = st.columns([1, 4])
             
             if col_btn1.button("🚀 최적화 시작", type="primary", use_container_width=True):
-                # 🟢 [핵심] 기존 '현재 설정' 지우기
                 st.session_state.opt_results = [r for r in st.session_state.opt_results if r.get('Label') != '🎯 현재 설정']
 
                 curr_res = backtest_engine_web(df, {
