@@ -736,62 +736,106 @@ MY_BEST_PARAMS = {{
                 c_buy, c_sell = st.columns(2)
                 
                 with c_buy:
-                    st.subheader("🛒 오늘의 매수 주문 (LOC)")
+                    st.subheader("🛒 오늘의 매수 주문 (Smart LOC)")
                     
-                    # 0. 파라미터 가져오기
-                    n_split = int(dash_params['add_order_cnt'])  # 분할 횟수
-                    loc_range = dash_params['loc_range']         # LOC 범위 (%)
-                    
+                    # 0. 파라미터 및 시드 설정
+                    n_split = int(dash_params['add_order_cnt'])
+                    loc_range = dash_params['loc_range']
                     if n_split < 1: n_split = 1
-
-                    # 1. 구간별 기본 매수 비율 (첫 번째 주문 기준)
+                    
+                    # 1회 시드 (총 자산의 10%)
+                    one_time_seed = total_equity / 10
+                    
+                    # 1. 구간별 시작 비율
                     if "바닥" in curr_phase: start_rate = dash_params['bt_buy']
                     elif "천장" in curr_phase: start_rate = dash_params['cl_buy']
                     else: start_rate = dash_params['md_buy']
                     
                     base_price = last_row['SOXL']
-                    one_time_seed = total_equity / 10  # 1개 티어당 배정된 총 시드
+                    
+                    # 메인 LOC 가격 (Start Price)
+                    loc_price = excel_round_down(base_price * (1 + start_rate/100.0), 2)
                     
                     st.markdown(f"**📉 기준 종가**: ${base_price} | **구간**: {curr_phase}")
-                    st.caption(f"⚙️ 설정: {n_split}분할 매수 / LOC 범위 {loc_range}%")
+                    st.caption(f"⚙️ 설정: {n_split}단 분할 / LOC 범위 {loc_range}% / 1회시드 ${one_time_seed:,.0f}")
                     st.markdown("---")
 
-                    # --- [A] 신규 진입 (Tier N+1) 계산 ---
+                    # ==========================================================
+                    # [핵심] 백테스트 엔진과 동일한 'Smart LOC' 계산 로직 함수
+                    # ==========================================================
+                    def get_smart_orders(seed, start_p, range_pct, split_cnt):
+                        orders = []
+                        if start_p <= 0: return orders
+                        
+                        # 1) Base Qty (메인 주문) 계산
+                        # 시드를 쪼개지 않고 통째로 계산합니다.
+                        base_qty = int(seed / start_p)
+                        orders.append({'price': start_p, 'qty': base_qty, 'type': 'MAIN'})
+                        
+                        if split_cnt <= 0: return orders
+
+                        # 2) Step Qty (추가 주문) 계산
+                        # 하단 가격
+                        multiplier = (1 + range_pct) if range_pct <= 0 else (1 - range_pct)
+                        bot_p = excel_round_down(start_p * multiplier, 2)
+                        
+                        if bot_p <= 0: return orders
+                        
+                        # 하단과 상단의 수량 차이를 분할 횟수로 나눔
+                        qty_at_bot = seed / bot_p
+                        qty_at_top = seed / start_p
+                        fix_qty = int((qty_at_bot - qty_at_top) / split_cnt)
+                        
+                        if fix_qty < 0: fix_qty = 0
+                        
+                        # 3) 추가 주문 리스트 생성
+                        # 가격 결정 논리: seed / (base + i*fix) = Price_i
+                        for i in range(1, split_cnt + 1):
+                            target_cum_qty = base_qty + (i * fix_qty)
+                            if target_cum_qty > 0:
+                                next_p = excel_round_down(seed / target_cum_qty, 2)
+                                # 가격이 0이거나 메인보다 높으면 스킵
+                                if next_p > 0 and next_p < start_p:
+                                    orders.append({'price': next_p, 'qty': fix_qty, 'type': 'ADD'})
+                        
+                        return orders
+
+                    # ==========================================================
+                    
+                    # --- [A] 신규 진입 (Tier N+1) ---
                     if len(current_holdings) < 10:
                         st.success(f"🆕 **신규 진입 (Tier {len(current_holdings)+1})**")
                         
-                        # 분할 매수 계산
-                        seed_per_split = one_time_seed / n_split # 분할된 1회 주문 금액
+                        # Smart LOC 주문 생성
+                        # 백테스트 로직: buy_range는 음수(예: -0.05)로 입력되어야 함
+                        range_val = -1 * (loc_range / 100.0)
+                        orders = get_smart_orders(one_time_seed, loc_price, range_val, n_split)
+                        
                         remaining_cash = current_cash
                         
-                        for i in range(n_split):
-                            # 가격 단계 계산 (범위 내에서 등분)
-                            # i=0: start_rate (메인)
-                            # i=끝: start_rate - loc_range
-                            if n_split > 1:
-                                step = loc_range / (n_split - 1) if n_split > 1 else 0
-                                current_rate = start_rate - (i * step)
-                            else:
-                                current_rate = start_rate
-
-                            loc_p = excel_round_down(base_price * (1 + current_rate/100.0), 2)
+                        for i, order in enumerate(orders):
+                            p = order['price']
+                            q = order['qty']
+                            amt = p * q
                             
-                            # 현금 체크 및 수량 계산
-                            real_bet = min(seed_per_split, remaining_cash)
-                            qty = math.floor(real_bet / loc_p) if loc_p > 0 else 0
-                            
-                            if qty > 0:
-                                remaining_cash -= (qty * loc_p) # 현금 소진 반영
-                                st.write(f"#{i+1} **${loc_p}** (LOC {current_rate:.2f}%) × **{qty}주**")
+                            # 현금 체크
+                            if remaining_cash >= amt:
+                                remaining_cash -= amt
+                                if order['type'] == 'MAIN':
+                                    st.markdown(f"⭐ **Main**: **${p}** × **{q}주**")
+                                else:
+                                    st.markdown(f"💧 **Add #{i}**: **${p}** × **{q}주**")
                             else:
-                                st.caption(f"#{i+1} 현금 부족으로 주문 불가")
+                                st.caption(f"#{i} 현금 부족 (${amt:,.0f} 필요)")
+                                
+                        st.caption(f"(총 예상 투입: ${sum([o['price']*o['qty'] for o in orders]):,.0f})")
+                            
                     else:
                         st.info("🚫 슬롯 꽉 참 (신규 진입 없음)")
 
                     st.markdown("---")
 
-                    # --- [B] 보유 종목 추가 매수 (물타기) 계산 ---
-                    # 모든 보유 티어에 대해 분할 주문 생성
+                    # --- [B] 보유 종목 추가 매수 (Smart LOC) ---
                     if current_holdings:
                         st.write(f"🔄 **보유 종목 추가 매수 ({len(current_holdings)}건)**")
                         
@@ -801,28 +845,27 @@ MY_BEST_PARAMS = {{
                             with st.container():
                                 st.markdown(f"**Tier {tier}** (평단 ${buy_p})")
                                 
-                                # 분할 매수 루프
-                                seed_per_split = one_time_seed / n_split
-                                remaining_cash = current_cash # (주의: 실제로는 신규매수와 현금 공유하므로 로직상 우선순위 필요하나, 여기선 단순 표시)
+                                # 보유 종목도 동일하게 Smart LOC 적용 (시드 재계산)
+                                range_val = -1 * (loc_range / 100.0)
+                                # 전략에 따라: '평단' 기준이 아닌 '오늘의 LOC 기준가'로 주문 생성
+                                # (물타기 시점 판단 로직이 있다면 여기서 필터링 가능)
                                 
+                                orders = get_smart_orders(one_time_seed, loc_price, range_val, n_split)
+                                
+                                remaining_cash = current_cash 
                                 has_order = False
-                                for i in range(n_split):
-                                    if n_split > 1:
-                                        step = loc_range / (n_split - 1)
-                                        current_rate = start_rate - (i * step)
-                                    else:
-                                        current_rate = start_rate
+                                
+                                for i, order in enumerate(orders):
+                                    p = order['price']
+                                    q = order['qty']
                                     
-                                    add_loc_p = excel_round_down(base_price * (1 + current_rate/100.0), 2)
+                                    # 물타기/불타기 아이콘
+                                    icon = "💧" if p < buy_p else "🔥"
+                                    label = "Main" if order['type']=='MAIN' else f"Add #{i}"
                                     
-                                    # 평단가 비교 (물타기/불타기)
-                                    icon = "💧" if add_loc_p < buy_p else "🔥"
-                                    
-                                    real_bet = min(seed_per_split, remaining_cash)
-                                    add_qty = math.floor(real_bet / add_loc_p) if add_loc_p > 0 else 0
-                                    
-                                    if add_qty > 0:
-                                        st.write(f"{icon} #{i+1} **${add_loc_p}** ({current_rate:.2f}%) × **{add_qty}주**")
+                                    if remaining_cash >= p*q:
+                                        # (주의: 실제로는 신규매수와 현금을 공유하므로 로직상 우선순위 필요)
+                                        st.write(f"{icon} **{label}**: **${p}** × **{q}주**")
                                         has_order = True
                                     
                                 if not has_order:
