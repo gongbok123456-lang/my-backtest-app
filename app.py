@@ -214,33 +214,42 @@ def backtest_engine_web(df, params):
         elif disp > strategy['Ceiling']['cond']: phase = 'Ceiling'
         else: phase = 'Middle'
         
-	# [진단 코드 시작] 2025년 5월 22일만 콕 집어서 확인
-        target_date_str = date.strftime('%Y-%m-%d')
-        if target_date_str == "2025-05-22":
-            # 1. 구간 판단 시뮬레이션
-            if disp < params['bt_cond']: test_mode = 'Bottom'; test_buy_pct = params['bt_buy']
-            elif disp > params['cl_cond']: test_mode = 'Ceiling'; test_buy_pct = params['cl_buy']
-            else: test_mode = 'Middle'; test_buy_pct = params['md_buy']
+	# [수정된 진단 코드] 날짜 형식이 뭐든 상관없이 작동하도록 변경
+        # 날짜 데이터(date)를 강제로 문자열로 변환해서 확인합니다.
+        check_date = str(date) 
+
+        # "2025-05" 또는 "25.05"가 포함된 날짜만 찾습니다.
+        if "2025-05" in check_date or "25.05" in check_date:
+            print(f"✅ 날짜 감지: {check_date} | 종가: {price} | 이격도: {disp:.2f}")
             
-            # 2. LOC 가격 계산
-            if i > 0:
-                prev_c = df.iloc[i-1]['SOXL']
-                calc_loc = excel_round_down(prev_c * (1 + test_buy_pct/100.0), 2)
-            else:
-                calc_loc = 0
+            # 22일 데이터 상세 분석
+            if "22" in check_date: 
+                # 전일 종가 가져오기 (에러 방지용 try-except)
+                try:
+                    prev_close = df.iloc[i-1]['SOXL']
+                except:
+                    prev_close = 0
                 
-            print(f"--- 🚨 5월 22일 정밀 진단 🚨 ---")
-            print(f"날짜: {target_date_str}")
-            print(f"QQQ 이격도: {disp:.4f}% (설정 기준: 바닥{params['bt_cond']}, 천장{params['cl_cond']})")
-            print(f"판단된 모드: {test_mode}")
-            print(f"적용된 매수 비율: {test_buy_pct}%")
-            print(f"전일 종가: {df.iloc[i-1]['SOXL']}")
-            print(f"계산된 매수 목표가(LOC): {calc_loc}")
-            print(f"당일 종가(Price): {price}")
-            print(f"매수 성공 여부(Price <= LOC): {price <= calc_loc}")
-            print(f"현재 보유 슬롯: {len(holdings)}/10")
-            print(f"-------------------------------")
-        # [진단 코드 끝]
+                print(f"   👉 22일 상세 진단")
+                print(f"   - 전일($): {prev_close} -> 금일($): {price}")
+                
+                # 매수 조건 재계산 (현재 파라미터 기준)
+                if disp < params['bt_cond']: t_mode = 'Bottom'
+                elif disp > params['cl_cond']: t_mode = 'Ceiling'
+                else: t_mode = 'Middle'
+                
+                print(f"   - 파이썬 판단 모드: {t_mode} (이격도 {disp:.2f}%)")
+                
+                # 모드별 매수 설정값 확인
+                if t_mode == 'Bottom': buy_rate = params['bt_buy']
+                elif t_mode == 'Ceiling': buy_rate = params['cl_buy']
+                else: buy_rate = params['md_buy']
+                
+                target_loc = excel_round_down(prev_close * (1 + buy_rate/100.0), 2)
+                print(f"   - 설정된 LOC 비율: {buy_rate}%")
+                print(f"   - 계산된 매수 타겟가: ${target_loc}")
+                print(f"   - 결과: {'매수 성공' if price <= target_loc else '매수 실패 (종가가 더 비쌈)'}")
+
 
         conf = strategy[phase]
         target_seed_float = seed_equity / MAX_SLOTS
