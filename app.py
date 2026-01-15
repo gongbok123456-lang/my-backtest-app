@@ -352,8 +352,27 @@ with st.sidebar:
     add_order_cnt = st.number_input("추가 주문 횟수", value=4, min_value=1) 
     loc_range = st.number_input("하단 범위 (-%)", value=20.0, min_value=0.0) 
     st.subheader("📈 기간 설정")
-    start_date = st.date_input("시작일", pd.to_datetime("2014-01-01"))
-    end_date = st.date_input("종료일", pd.to_datetime("2025-12-31"))
+    
+    # 1. 오늘 날짜를 구합니다.
+    today = datetime.date.today()
+    
+    # 2. 시작일 설정
+    # value: 기본값 (2010년 1월 1일로 설정 - 원하시는 대로 수정 가능)
+    # max_value: 오늘 이후로는 선택 못하게 막음 (미래 데이터는 없으니까요)
+    start_date = st.date_input(
+        "시작일", 
+        value=datetime.date(2010, 1, 1), 
+        max_value=today
+    )
+    
+    # 3. 종료일 설정
+    # value: 기본값을 'today'(오늘)로 설정 -> 매일 접속할 때마다 자동으로 바뀝니다.
+    # max_value: 오늘 이후 날짜 선택 방지
+    end_date = st.date_input(
+        "종료일", 
+        value=today, 
+        max_value=today
+    )
 
 if sheet_url:
     df = load_data_from_gsheet(sheet_url)
