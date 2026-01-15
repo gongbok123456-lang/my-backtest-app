@@ -22,7 +22,7 @@ if 'trial_count' not in st.session_state:
 if 'last_backtest_result' not in st.session_state:
     st.session_state.last_backtest_result = None
 
-# --- [구글 시트 데이터 로드 함수] ---
+# --- [구글 시트 데이터 로드 함수] (사용자 맞춤형 수정) ---
 @st.cache_data(ttl=600)
 def load_data_from_gsheet(url):
     try:
@@ -31,7 +31,7 @@ def load_data_from_gsheet(url):
         
         creds_dict = dict(st.secrets["gcp_service_account"])
         
-        # private_key 오류 보정 (줄바꿈 문자 치환)
+        # private_key 오류 보정
         if "private_key" in creds_dict:
             creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
             
@@ -40,49 +40,53 @@ def load_data_from_gsheet(url):
 
         # 시트 열기
         sheet = client.open_by_url(url)
-        worksheet = sheet.get_worksheet(0) 
+        worksheet = sheet.get_worksheet(0) # 첫 번째 시트
         
-        # 🟢 [수정됨] get_all_records() -> get_all_values() 로 변경
-        # 이렇게 하면 헤더에 빈칸이 있어도 에러가 나지 않습니다.
+        # 전체 데이터를 '값'으로만 가져오기 (수식 무시)
         rows = worksheet.get_all_values()
         
         if not rows:
+            st.error("시트가 비어있습니다.")
             return None
 
-        # 첫 번째 줄을 컬럼명(Header)으로, 나머지를 데이터로 만듦
-        header = rows[0]
-        data = rows[1:]
-        df = pd.DataFrame(data, columns=header)
+        # 판다스 DataFrame으로 변환
+        raw_df = pd.DataFrame(rows)
         
-        # 'Date' 컬럼이 있는지 확인하고 인덱스 설정
-        # (대소문자 구분 없이 찾기 위해 컬럼명을 정리할 수도 있음)
-        if 'Date' in df.columns:
-            # 빈 값('')이 있는 행 제거
-            df = df[df['Date'] != '']
-            df['Date'] = pd.to_datetime(df['Date'])
-            df.set_index('Date', inplace=True)
-        else:
-            st.error("❌ 시트에 'Date' 컬럼이 없습니다. (대소문자 확인 필요)")
+        # 🟢 [핵심 수정] 사용자 시트 구조에 맞춰 특정 열만 선택
+        # 0부터 시작하므로 A=0, G=6, I=8, L=11 입니다.
+        # 데이터가 5행(인덱스 4)부터 시작한다고 가정하고 위쪽은 잘라냅니다.
+        
+        # 필요한 열만 추출 (G열:Date, I열:QQQ, L열:SOXL)
+        try:
+            df = raw_df.iloc[4:, [6, 8, 11]].copy() # 5행부터 시작, G,I,L열 선택
+            df.columns = ['Date', 'QQQ', 'SOXL']    # 이름 강제 지정
+        except IndexError:
+            st.error("❌ 시트의 열 개수가 부족합니다. G, I, L열에 데이터가 있는지 확인해주세요.")
             return None
-            
-        # 숫자 변환 (SOXL)
-        if 'SOXL' in df.columns:
-            # 쉼표(,) 제거 후 숫자로 변환, 에러나면 NaN 처리
-            df['SOXL'] = pd.to_numeric(df['SOXL'].astype(str).str.replace(',', ''), errors='coerce')
+
+        # 1. 날짜 변환 (빈 값이나 이상한 값 제거)
+        df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+        df = df.dropna(subset=['Date']) # 날짜가 없는 행(빈 행) 삭제
         
-        # 숫자 변환 (QQQ)
-        if 'QQQ' in df.columns:
-            df['QQQ'] = pd.to_numeric(df['QQQ'].astype(str).str.replace(',', ''), errors='coerce')
+        # 2. 숫자 변환 (QQQ, SOXL)
+        for col in ['QQQ', 'SOXL']:
+            # 쉼표(,), 달러($) 제거 후 숫자로 변환
+            df[col] = df[col].astype(str).str.replace(',', '').str.replace('$', '')
+            df[col] = pd.to_numeric(df[col], errors='coerce')
             
-        # 데이터가 없는 행(NaN) 제거
-        df.dropna(subset=['SOXL'], inplace=True)
-        
+        # 3. 데이터 정렬 및 인덱스 설정
+        df.set_index('Date', inplace=True)
         df.sort_index(inplace=True)
+        
+        # SOXL 데이터가 없는 구간(5행~50행 사이)은 NaN으로 남겨두거나 채울 수 있음
+        # 여기서는 NaN인 상태로 둡니다 (백테스트 엔진이 알아서 처리)
+        
         return df
 
     except Exception as e:
         st.error(f"구글 시트 로드 실패: {e}")
         return None
+
 
 # --- [유틸리티 함수] ---
 def excel_round_up(n, decimals=0):
