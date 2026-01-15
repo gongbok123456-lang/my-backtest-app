@@ -225,48 +225,6 @@ def backtest_engine_web(df, params):
         if disp < params['bt_cond']: phase = 'Bottom'
         elif disp > params['cl_cond']: phase = 'Ceiling'
         else: phase = 'Middle'
-        
-        # ---------------------------------------------------------
-        # [🚨 진단 코드 시작 : print -> st.write 변경]
-        # ---------------------------------------------------------
-        check_date = str(date)
-
-        # 2025년 5월 데이터만 화면에 출력
-        if "2025-05" in check_date or "25.05" in check_date:
-            
-            # 22일 데이터는 빨간색 박스로 강조
-            if "22" in check_date:
-                try:
-                    prev_close = df.iloc[i-1]['SOXL']
-                except:
-                    prev_close = 0
-                
-                st.error(f"🚨 [22일 정밀 진단] 날짜: {check_date}")
-                st.write(f"👉 가격 변화: 전일 ${prev_close} → 금일 ${price}")
-                st.write(f"👉 이격도 상태: {disp:.2f}% (구간판단: {phase})")
-                
-                # 매수 타겟 계산 시뮬레이션
-                if phase == 'Bottom': buy_rate = params['bt_buy']
-                elif phase == 'Ceiling': buy_rate = params['cl_buy']
-                else: buy_rate = params['md_buy']
-                
-                target_loc = excel_round_down(prev_close * (1 + buy_rate/100.0), 2)
-                
-                st.write(f"👉 설정된 LOC 비율: {buy_rate}%")
-                st.write(f"👉 매수 목표가(LOC): ${target_loc}")
-                
-                if price <= target_loc:
-                    st.success(f"✅ 매수 성공 조건 만족! (종가 ${price} <= 목표가 ${target_loc})")
-                else:
-                    st.error(f"❌ 매수 실패 (종가 ${price} > 목표가 ${target_loc}) - 너무 비싸서 안 삼")
-            
-            # 5월의 다른 날짜들은 텍스트로만 표시 (로그 확인용)
-            else:
-                 st.text(f"📅 {check_date} | 종가: {price} | 이격도: {disp:.2f}% | 구간: {phase}")
-
-        # ---------------------------------------------------------
-        # [진단 코드 끝]
-
 
         conf = strategy[phase]
         target_seed_float = seed_equity / MAX_SLOTS
@@ -431,31 +389,6 @@ with st.sidebar:
 
 if sheet_url:
     df = load_data_from_gsheet(sheet_url)
-    # -----------------------------------------------------------
-    # [🚨 원본 데이터 긴급 점검 코드]
-    # 백테스트 엔진에 들어가기 전에, 로드된 직후의 상태를 봅니다.
-    # -----------------------------------------------------------
-    if df is not None:
-        st.subheader("🔍 데이터 로드 직후 원본 확인 (5월 22일)")
-        
-        # 날짜 인덱스를 문자열로 바꿔서 검색
-        # (df의 인덱스가 날짜라고 가정)
-        temp_df = df.copy()
-        temp_df.index = temp_df.index.astype(str)
-        
-        # 2025-05-22 또는 25.05.22 검색
-        target_rows = temp_df[temp_df.index.str.contains("2025-05-22|25.05.22")]
-        
-        if not target_rows.empty:
-            st.write("👇 파이썬이 읽어온 5월 22일의 원본 데이터:")
-            st.dataframe(target_rows)
-            
-            soxl_val = target_rows['SOXL'].iloc[0]
-            st.write(f"👉 SOXL 컬럼의 값: **{soxl_val}**")
-            st.write(f"👉 데이터 타입: {type(soxl_val)}")
-        else:
-            st.error("❌ 데이터프레임에 5월 22일 날짜 자체가 없습니다!")
-    # -----------------------------------------------------------
     
     if df is not None:
         # [수정] 탭에 "대시보드"를 맨 앞에 추가합니다.
