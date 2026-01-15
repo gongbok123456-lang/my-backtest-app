@@ -22,64 +22,60 @@ if 'trial_count' not in st.session_state:
 if 'last_backtest_result' not in st.session_state:
     st.session_state.last_backtest_result = None
 
-# --- [구글 시트 데이터 로드 함수] (사용자 맞춤형 수정) ---
+# --- [구글 시트 데이터 로드 함수] (날짜 파싱 강화 버전) ---
 @st.cache_data(ttl=600)
 def load_data_from_gsheet(url):
     try:
-        # Streamlit Secrets에서 인증 정보 가져오기
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        
         creds_dict = dict(st.secrets["gcp_service_account"])
         
-        # private_key 오류 보정
         if "private_key" in creds_dict:
             creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
             
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
 
-        # 시트 열기
         sheet = client.open_by_url(url)
-        worksheet = sheet.get_worksheet(0) # 첫 번째 시트
-        
-        # 전체 데이터를 '값'으로만 가져오기 (수식 무시)
+        worksheet = sheet.get_worksheet(0)
         rows = worksheet.get_all_values()
         
         if not rows:
             st.error("시트가 비어있습니다.")
             return None
 
-        # 판다스 DataFrame으로 변환
         raw_df = pd.DataFrame(rows)
         
-        # 🟢 [핵심 수정] 사용자 시트 구조에 맞춰 특정 열만 선택
-        # 0부터 시작하므로 A=0, G=6, I=8, L=11 입니다.
-        # 데이터가 5행(인덱스 4)부터 시작한다고 가정하고 위쪽은 잘라냅니다.
-        
-        # 필요한 열만 추출 (G열:Date, I열:QQQ, L열:SOXL)
+        # 5행부터 데이터 시작, G열(6), I열(8), L열(11) 추출
         try:
-            df = raw_df.iloc[4:, [6, 8, 11]].copy() # 5행부터 시작, G,I,L열 선택
-            df.columns = ['Date', 'QQQ', 'SOXL']    # 이름 강제 지정
+            df = raw_df.iloc[4:, [6, 8, 11]].copy()
+            df.columns = ['Date', 'QQQ', 'SOXL']
         except IndexError:
-            st.error("❌ 시트의 열 개수가 부족합니다. G, I, L열에 데이터가 있는지 확인해주세요.")
+            st.error("❌ 시트 열 개수 부족 (G, I, L열 확인 필요)")
             return None
 
-        # 1. 날짜 변환 (빈 값이나 이상한 값 제거)
-        df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-        df = df.dropna(subset=['Date']) # 날짜가 없는 행(빈 행) 삭제
+        # 🟢 [수정됨] 날짜 전처리 (한글 요일 제거)
+        # 예: "26.01.14(수)" -> "26.01.14" -> 2026-01-14
+        # 정규표현식으로 괄호와 그 안의 내용 제거
+        df['Date'] = df['Date'].astype(str).str.replace(r'\(.*\)', '', regex=True).str.strip()
         
-        # 2. 숫자 변환 (QQQ, SOXL)
+        # 날짜 변환 (자동 추론)
+        df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+        
+        # 날짜 없는 행 제거
+        df = df.dropna(subset=['Date'])
+        
+        # 숫자 변환
         for col in ['QQQ', 'SOXL']:
-            # 쉼표(,), 달러($) 제거 후 숫자로 변환
             df[col] = df[col].astype(str).str.replace(',', '').str.replace('$', '')
             df[col] = pd.to_numeric(df[col], errors='coerce')
             
-        # 3. 데이터 정렬 및 인덱스 설정
         df.set_index('Date', inplace=True)
         df.sort_index(inplace=True)
         
-        # SOXL 데이터가 없는 구간(5행~50행 사이)은 NaN으로 남겨두거나 채울 수 있음
-        # 여기서는 NaN인 상태로 둡니다 (백테스트 엔진이 알아서 처리)
+        # 데이터가 너무 적으면 경고
+        if len(df) < 10:
+            st.warning(f"⚠️ 데이터가 {len(df)}개 뿐입니다. 날짜 형식을 확인해주세요.")
+            st.write("로드된 데이터 예시:", df.head())
         
         return df
 
