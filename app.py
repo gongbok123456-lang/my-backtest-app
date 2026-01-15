@@ -517,7 +517,7 @@ if sheet_url:
                 cl_buy = st.number_input("매수점 (%)", -30.0, 30.0, -0.1, step=0.1, key='cl_b')
                 cl_prof = st.number_input("익절 (%)", 0.0, 100.0, 1.5, step=0.1, key='cl_p')
                 cl_time = st.number_input("존버일", 1, 100, 40, key='cl_t')
-            	ma_win = st.number_input("이평선 (MA)", 50, 300, 200)
+            ma_win = st.number_input("이평선 (MA)", 50, 300, 200)
 
             if st.button("백테스트 실행 (Run)", type="primary"):
                 current_params = {
