@@ -206,8 +206,10 @@ def backtest_engine_web(df, params):
         row = df.iloc[i]
         date = row.name
         today_close = row['SOXL']
+        price = today_close
         if pd.isna(today_close) or today_close <= 0: continue
         if params.get('force_round', True): today_close = round(today_close, 2)
+        price = today_close
 
         disp = row['Basis_Disp'] if not pd.isna(row['Basis_Disp']) else 1.0
         
