@@ -362,140 +362,6 @@ if sheet_url:
         # [수정] 탭에 "대시보드"를 맨 앞에 추가합니다.
         tab0, tab1, tab2, tab3 = st.tabs(["📢 대시보드", "🚀 백테스트", "🎲 몬테카를로 최적화", "🔬 심층 분석"])
         
-        # --- [탭 0: 실전 투자 대시보드] ---
-        with tab0:
-            st.header("📢 오늘의 투자 브리핑")
-            
-            # 대시보드를 보려면 백테스트가 한 번은 돌아가야 현재 상태를 알 수 있습니다.
-            # 가장 최근 설정값(없으면 기본값)으로 백테스트를 실행합니다.
-            dash_params = {
-                'start_date': start_date, 'end_date': end_date,
-                'initial_balance': balance, 'fee_rate': fee/100,
-                'profit_rate': profit_rate/100.0, 'loss_rate': loss_rate/100.0,
-                'loc_range': loc_range, 'add_order_cnt': add_order_cnt,
-                'force_round': True, 'ma_window': ma_win, 
-                'bt_cond': bt_cond, 'bt_buy': bt_buy, 'bt_prof': bt_prof/100, 'bt_time': bt_time,
-                'md_buy': md_buy, 'md_prof': md_prof/100, 'md_time': md_time,
-                'cl_cond': cl_cond, 'cl_buy': cl_buy, 'cl_prof': cl_prof/100, 'cl_time': cl_time
-            }
-            
-            # 조용히 백테스트 실행하여 최신 상태 가져오기
-            res = backtest_engine_web(df, dash_params)
-            
-            if res:
-                last_row = res['LastData']
-                last_date = last_row.name.strftime('%Y-%m-%d')
-                current_holdings = res['CurrentHoldings']
-                
-                # 1. 상단 요약 정보
-                st.info(f"📅 기준 날짜: **{last_date}** (데이터 마지막 업데이트)")
-                
-                k1, k2, k3, k4 = st.columns(4)
-                current_cash = res['DailyLog'].iloc[-1]['Cash']
-                total_equity = res['DailyLog'].iloc[-1]['Equity']
-                
-                # 현재 구간(Phase) 판단
-                disp = last_row['Basis_Disp']
-                if disp < dash_params['bt_cond']: curr_phase = "📉 바닥 (Bottom)"
-                elif disp > dash_params['cl_cond']: curr_phase = "📈 천장 (Ceiling)"
-                else: curr_phase = "➖ 중간 (Middle)"
-
-                k1.metric("현재 총 자산", f"${total_equity:,.0f}")
-                k2.metric("보유 현금 (주문가능)", f"${current_cash:,.0f}")
-                k3.metric("현재 이격도", f"{disp:.4f}")
-                k4.metric("현재 구간", curr_phase)
-                
-                st.markdown("---")
-
-                # 2. 오늘의 매수/매도 주문 (핵심)
-                c_buy, c_sell = st.columns(2)
-                
-                with c_buy:
-                    st.subheader("🛒 오늘 매수할 주문 (LOC)")
-                    
-                    # 매수 타겟 계산
-                    if "바닥" in curr_phase: 
-                        target_rate = dash_params['bt_buy']
-                    elif "천장" in curr_phase: 
-                        target_rate = dash_params['cl_buy']
-                    else: 
-                        target_rate = dash_params['md_buy']
-                        
-                    target_price = excel_round_down(last_row['SOXL'] * (1 + target_rate/100.0), 2)
-                    
-                    # 매수 수량 계산 (현금 범위 내)
-                    # 시드 분할 로직 (최대 슬롯 10개 가정)
-                    target_seed = total_equity / 10
-                    bet_amount = min(target_seed, current_cash)
-                    
-                    if len(current_holdings) >= 10:
-                        st.warning("🚫 보유 슬롯이 꽉 찼습니다 (10/10). 추가 매수 금지.")
-                    elif bet_amount < 10:
-                        st.warning("🚫 주문 가능 현금이 부족합니다.")
-                    else:
-                        st.success(f"**LOC 매수**를 준비하세요.")
-                        st.markdown(f"""
-                        - **매수 기준가**: ${target_price} ({target_rate}%)
-                        - **LOC 하단(-{dash_params['loc_range']}%)**: ${excel_round_down(target_price * (1 - dash_params['loc_range']/100), 2)}
-                        - **예상 투입 금액**: ${bet_amount:,.0f}
-                        """)
-                        st.caption("※ 실제 수량은 장마감 직전 가격에 따라 LOC 로직으로 결정됩니다.")
-
-                with c_sell:
-                    st.subheader("💰 매도 대기 물량 (지정가)")
-                    if not current_holdings:
-                        st.write("보유 중인 종목이 없습니다.")
-                    else:
-                        sell_list = []
-                        for h in current_holdings:
-                            # holdings 구조: [buy_price, days, qty, mode, tier, buy_dt]
-                            buy_p, days, qty, mode, tier, buy_dt = h
-                            
-                            # 익절 목표가 계산
-                            if mode == 'Bottom': prof_rate = dash_params['bt_prof']
-                            elif mode == 'Ceiling': prof_rate = dash_params['cl_prof']
-                            else: prof_rate = dash_params['md_prof']
-                            
-                            target_sell_p = excel_round_up(buy_p * (1 + prof_rate), 2)
-                            curr_return = (last_row['SOXL'] - buy_p) / buy_p * 100
-                            
-                            sell_list.append({
-                                'Tier': tier,
-                                '매수일': buy_dt.strftime('%Y-%m-%d'),
-                                '보유일': f"{days}일",
-                                '매수가': f"${buy_p}",
-                                '수량': qty,
-                                '🎯 매도목표가': f"${target_sell_p}",
-                                '현재수익률': f"{curr_return:.2f}%"
-                            })
-                        st.dataframe(pd.DataFrame(sell_list), hide_index=True, use_container_width=True)
-
-                st.markdown("---")
-
-                # 3. 최근 매매 기록 (어제 체결 & 최근 1달)
-                st.subheader("📜 최근 매매 일지")
-                
-                trade_log_df = res['TradeLog']
-                if not trade_log_df.empty:
-                    # 날짜 내림차순 정렬
-                    trade_log_df = trade_log_df.sort_values('Date', ascending=False)
-                    
-                    # 어제(가장 최근 데이터 날짜) 체결 내역
-                    last_trade_date = trade_log_df.iloc[0]['Date']
-                    if last_trade_date == last_row.name:
-                        st.write(f"🔔 **최근 체결 알림 ({last_trade_date.strftime('%Y-%m-%d')})**")
-                        recent_trades = trade_log_df[trade_log_df['Date'] == last_trade_date]
-                        st.dataframe(recent_trades, hide_index=True, use_container_width=True)
-                    else:
-                        st.write(f"🔔 가장 최근 데이터 날짜 ({last_date})에는 체결된 내역이 없습니다.")
-                    
-                    with st.expander("🗓️ 최근 30일간 매매 전체 보기"):
-                        month_ago = last_row.name - pd.Timedelta(days=30)
-                        recent_month_log = trade_log_df[trade_log_df['Date'] >= month_ago]
-                        st.dataframe(recent_month_log, hide_index=True, use_container_width=True)
-                else:
-                    st.info("아직 체결된 매매 기록이 없습니다.")
-        
         # 탭 1: 백테스트
         with tab1:
             st.subheader("🛠️ 전략 파라미터 입력")
@@ -789,6 +655,139 @@ MY_BEST_PARAMS = {{
                     yearly_df.columns = ['Return %']
                     yearly_df.index = yearly_df.index.strftime('%Y')
                     st.dataframe(yearly_df.style.background_gradient(cmap='RdBu_r', vmin=-50, vmax=50), use_container_width=True)
+ # --- [탭 0: 실전 투자 대시보드] ---
+        with tab0:
+            st.header("📢 오늘의 투자 브리핑")
+            
+            # 대시보드를 보려면 백테스트가 한 번은 돌아가야 현재 상태를 알 수 있습니다.
+            # 가장 최근 설정값(없으면 기본값)으로 백테스트를 실행합니다.
+            dash_params = {
+                'start_date': start_date, 'end_date': end_date,
+                'initial_balance': balance, 'fee_rate': fee/100,
+                'profit_rate': profit_rate/100.0, 'loss_rate': loss_rate/100.0,
+                'loc_range': loc_range, 'add_order_cnt': add_order_cnt,
+                'force_round': True, 'ma_window': ma_win, 
+                'bt_cond': bt_cond, 'bt_buy': bt_buy, 'bt_prof': bt_prof/100, 'bt_time': bt_time,
+                'md_buy': md_buy, 'md_prof': md_prof/100, 'md_time': md_time,
+                'cl_cond': cl_cond, 'cl_buy': cl_buy, 'cl_prof': cl_prof/100, 'cl_time': cl_time
+            }
+            
+            # 조용히 백테스트 실행하여 최신 상태 가져오기
+            res = backtest_engine_web(df, dash_params)
+            
+            if res:
+                last_row = res['LastData']
+                last_date = last_row.name.strftime('%Y-%m-%d')
+                current_holdings = res['CurrentHoldings']
+                
+                # 1. 상단 요약 정보
+                st.info(f"📅 기준 날짜: **{last_date}** (데이터 마지막 업데이트)")
+                
+                k1, k2, k3, k4 = st.columns(4)
+                current_cash = res['DailyLog'].iloc[-1]['Cash']
+                total_equity = res['DailyLog'].iloc[-1]['Equity']
+                
+                # 현재 구간(Phase) 판단
+                disp = last_row['Basis_Disp']
+                if disp < dash_params['bt_cond']: curr_phase = "📉 바닥 (Bottom)"
+                elif disp > dash_params['cl_cond']: curr_phase = "📈 천장 (Ceiling)"
+                else: curr_phase = "➖ 중간 (Middle)"
+
+                k1.metric("현재 총 자산", f"${total_equity:,.0f}")
+                k2.metric("보유 현금 (주문가능)", f"${current_cash:,.0f}")
+                k3.metric("현재 이격도", f"{disp:.4f}")
+                k4.metric("현재 구간", curr_phase)
+                
+                st.markdown("---")
+
+                # 2. 오늘의 매수/매도 주문 (핵심)
+                c_buy, c_sell = st.columns(2)
+                
+                with c_buy:
+                    st.subheader("🛒 오늘 매수할 주문 (LOC)")
+                    
+                    # 매수 타겟 계산
+                    if "바닥" in curr_phase: 
+                        target_rate = dash_params['bt_buy']
+                    elif "천장" in curr_phase: 
+                        target_rate = dash_params['cl_buy']
+                    else: 
+                        target_rate = dash_params['md_buy']
+                        
+                    target_price = excel_round_down(last_row['SOXL'] * (1 + target_rate/100.0), 2)
+                    
+                    # 매수 수량 계산 (현금 범위 내)
+                    # 시드 분할 로직 (최대 슬롯 10개 가정)
+                    target_seed = total_equity / 10
+                    bet_amount = min(target_seed, current_cash)
+                    
+                    if len(current_holdings) >= 10:
+                        st.warning("🚫 보유 슬롯이 꽉 찼습니다 (10/10). 추가 매수 금지.")
+                    elif bet_amount < 10:
+                        st.warning("🚫 주문 가능 현금이 부족합니다.")
+                    else:
+                        st.success(f"**LOC 매수**를 준비하세요.")
+                        st.markdown(f"""
+                        - **매수 기준가**: ${target_price} ({target_rate}%)
+                        - **LOC 하단(-{dash_params['loc_range']}%)**: ${excel_round_down(target_price * (1 - dash_params['loc_range']/100), 2)}
+                        - **예상 투입 금액**: ${bet_amount:,.0f}
+                        """)
+                        st.caption("※ 실제 수량은 장마감 직전 가격에 따라 LOC 로직으로 결정됩니다.")
+
+                with c_sell:
+                    st.subheader("💰 매도 대기 물량 (지정가)")
+                    if not current_holdings:
+                        st.write("보유 중인 종목이 없습니다.")
+                    else:
+                        sell_list = []
+                        for h in current_holdings:
+                            # holdings 구조: [buy_price, days, qty, mode, tier, buy_dt]
+                            buy_p, days, qty, mode, tier, buy_dt = h
+                            
+                            # 익절 목표가 계산
+                            if mode == 'Bottom': prof_rate = dash_params['bt_prof']
+                            elif mode == 'Ceiling': prof_rate = dash_params['cl_prof']
+                            else: prof_rate = dash_params['md_prof']
+                            
+                            target_sell_p = excel_round_up(buy_p * (1 + prof_rate), 2)
+                            curr_return = (last_row['SOXL'] - buy_p) / buy_p * 100
+                            
+                            sell_list.append({
+                                'Tier': tier,
+                                '매수일': buy_dt.strftime('%Y-%m-%d'),
+                                '보유일': f"{days}일",
+                                '매수가': f"${buy_p}",
+                                '수량': qty,
+                                '🎯 매도목표가': f"${target_sell_p}",
+                                '현재수익률': f"{curr_return:.2f}%"
+                            })
+                        st.dataframe(pd.DataFrame(sell_list), hide_index=True, use_container_width=True)
+
+                st.markdown("---")
+
+                # 3. 최근 매매 기록 (어제 체결 & 최근 1달)
+                st.subheader("📜 최근 매매 일지")
+                
+                trade_log_df = res['TradeLog']
+                if not trade_log_df.empty:
+                    # 날짜 내림차순 정렬
+                    trade_log_df = trade_log_df.sort_values('Date', ascending=False)
+                    
+                    # 어제(가장 최근 데이터 날짜) 체결 내역
+                    last_trade_date = trade_log_df.iloc[0]['Date']
+                    if last_trade_date == last_row.name:
+                        st.write(f"🔔 **최근 체결 알림 ({last_trade_date.strftime('%Y-%m-%d')})**")
+                        recent_trades = trade_log_df[trade_log_df['Date'] == last_trade_date]
+                        st.dataframe(recent_trades, hide_index=True, use_container_width=True)
+                    else:
+                        st.write(f"🔔 가장 최근 데이터 날짜 ({last_date})에는 체결된 내역이 없습니다.")
+                    
+                    with st.expander("🗓️ 최근 30일간 매매 전체 보기"):
+                        month_ago = last_row.name - pd.Timedelta(days=30)
+                        recent_month_log = trade_log_df[trade_log_df['Date'] >= month_ago]
+                        st.dataframe(recent_month_log, hide_index=True, use_container_width=True)
+                else:
+                    st.info("아직 체결된 매매 기록이 없습니다.")
 
 else:
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
