@@ -29,10 +29,9 @@ def load_data_from_gsheet(url):
         # Streamlit Secrets에서 인증 정보 가져오기
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         
-        # 🟢 [수정됨] 딕셔너리로 변환 후 private_key 오류 보정
         creds_dict = dict(st.secrets["gcp_service_account"])
         
-        # private_key에 있는 "\n" 문자열을 실제 줄바꿈 문자로 치환
+        # private_key 오류 보정 (줄바꿈 문자 치환)
         if "private_key" in creds_dict:
             creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
             
@@ -43,27 +42,45 @@ def load_data_from_gsheet(url):
         sheet = client.open_by_url(url)
         worksheet = sheet.get_worksheet(0) 
         
-        data = worksheet.get_all_records()
-        df = pd.DataFrame(data)
+        # 🟢 [수정됨] get_all_records() -> get_all_values() 로 변경
+        # 이렇게 하면 헤더에 빈칸이 있어도 에러가 나지 않습니다.
+        rows = worksheet.get_all_values()
         
+        if not rows:
+            return None
+
+        # 첫 번째 줄을 컬럼명(Header)으로, 나머지를 데이터로 만듦
+        header = rows[0]
+        data = rows[1:]
+        df = pd.DataFrame(data, columns=header)
+        
+        # 'Date' 컬럼이 있는지 확인하고 인덱스 설정
+        # (대소문자 구분 없이 찾기 위해 컬럼명을 정리할 수도 있음)
         if 'Date' in df.columns:
+            # 빈 값('')이 있는 행 제거
+            df = df[df['Date'] != '']
             df['Date'] = pd.to_datetime(df['Date'])
             df.set_index('Date', inplace=True)
         else:
-            st.error("❌ 시트에 'Date' 컬럼이 없습니다.")
+            st.error("❌ 시트에 'Date' 컬럼이 없습니다. (대소문자 확인 필요)")
             return None
             
+        # 숫자 변환 (SOXL)
         if 'SOXL' in df.columns:
+            # 쉼표(,) 제거 후 숫자로 변환, 에러나면 NaN 처리
             df['SOXL'] = pd.to_numeric(df['SOXL'].astype(str).str.replace(',', ''), errors='coerce')
         
+        # 숫자 변환 (QQQ)
         if 'QQQ' in df.columns:
             df['QQQ'] = pd.to_numeric(df['QQQ'].astype(str).str.replace(',', ''), errors='coerce')
             
+        # 데이터가 없는 행(NaN) 제거
+        df.dropna(subset=['SOXL'], inplace=True)
+        
         df.sort_index(inplace=True)
         return df
 
     except Exception as e:
-        # 에러 메시지를 좀 더 자세히 출력
         st.error(f"구글 시트 로드 실패: {e}")
         return None
 
