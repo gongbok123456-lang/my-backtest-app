@@ -205,55 +205,67 @@ def backtest_engine_web(df, params):
     for i in range(len(df)):
         row = df.iloc[i]
         date = row.name
-        today_close = row['SOXL']
-        price = today_close
-        if pd.isna(today_close) or today_close <= 0: continue
-        if params.get('force_round', True): today_close = round(today_close, 2)
-        price = today_close
-
-        disp = row['Basis_Disp'] if not pd.isna(row['Basis_Disp']) else 1.0
         
-        if disp < strategy['Bottom']['cond']: phase = 'Bottom'
-        elif disp > strategy['Ceiling']['cond']: phase = 'Ceiling'
+        # 1. 변수명 통일 (사용자님 코드 + 진단 코드 호환)
+        today_close = row['SOXL']
+        price = today_close  # price 변수 생성
+        
+        # 데이터 유효성 체크
+        if pd.isna(today_close) or today_close <= 0: continue
+        if params.get('force_round', True): 
+            today_close = round(today_close, 2)
+            price = today_close 
+
+        # 2. 이격도(disp) 가져오기
+        disp = row['Basis_Disp'] if not pd.isna(row['Basis_Disp']) else 0.0
+        
+        # 3. 구간(Phase) 판단 (params 기준)
+        # (만약 strategy 변수를 쓰신다면 이 부분을 사용자님 코드에 맞게 수정이 필요할 수 있습니다)
+        # 여기서는 params를 기준으로 안전하게 작성했습니다.
+        if disp < params['bt_cond']: phase = 'Bottom'
+        elif disp > params['cl_cond']: phase = 'Ceiling'
         else: phase = 'Middle'
         
-	# [수정된 진단 코드] 날짜 형식이 뭐든 상관없이 작동하도록 변경
-        # 날짜 데이터(date)를 강제로 문자열로 변환해서 확인합니다.
-        check_date = str(date) 
+        # ---------------------------------------------------------
+        # [🚨 진단 코드 시작 : print -> st.write 변경]
+        # ---------------------------------------------------------
+        check_date = str(date)
 
-       # "2025-05" 또는 "25.05"가 포함된 날짜만 찾습니다.
+        # 2025년 5월 데이터만 화면에 출력
         if "2025-05" in check_date or "25.05" in check_date:
-            print(f"✅ 날짜 감지: {check_date} | 종가: {price} | 이격도: {disp:.2f}")
             
-            # 22일 데이터 상세 분석
-            if "22" in check_date: 
+            # 22일 데이터는 빨간색 박스로 강조
+            if "22" in check_date:
                 try:
                     prev_close = df.iloc[i-1]['SOXL']
                 except:
                     prev_close = 0
                 
-                print(f"   👉 22일 상세 진단")
-                print(f"   - 전일($): {prev_close} -> 금일($): {price}")
+                st.error(f"🚨 [22일 정밀 진단] 날짜: {check_date}")
+                st.write(f"👉 가격 변화: 전일 ${prev_close} → 금일 ${price}")
+                st.write(f"👉 이격도 상태: {disp:.2f}% (구간판단: {phase})")
                 
-                # 매수 조건 재계산
-                if disp < params['bt_cond']: t_mode = 'Bottom'
-                elif disp > params['cl_cond']: t_mode = 'Ceiling'
-                else: t_mode = 'Middle'
-                
-                print(f"   - 파이썬 판단 모드: {t_mode} (이격도 {disp:.2f}%)")
-                
-                if t_mode == 'Bottom': buy_rate = params['bt_buy']
-                elif t_mode == 'Ceiling': buy_rate = params['cl_buy']
+                # 매수 타겟 계산 시뮬레이션
+                if phase == 'Bottom': buy_rate = params['bt_buy']
+                elif phase == 'Ceiling': buy_rate = params['cl_buy']
                 else: buy_rate = params['md_buy']
                 
                 target_loc = excel_round_down(prev_close * (1 + buy_rate/100.0), 2)
-                print(f"   - 설정된 LOC 비율: {buy_rate}%")
-                print(f"   - 계산된 매수 타겟가: ${target_loc}")
+                
+                st.write(f"👉 설정된 LOC 비율: {buy_rate}%")
+                st.write(f"👉 매수 목표가(LOC): ${target_loc}")
                 
                 if price <= target_loc:
-                    print(f"   - 결과: 🟢 매수 성공 (종가 {price} <= 타겟 {target_loc})")
+                    st.success(f"✅ 매수 성공 조건 만족! (종가 ${price} <= 목표가 ${target_loc})")
                 else:
-                    print(f"   - 결과: 🔴 매수 실패 (종가 {price} > 타겟 {target_loc})")
+                    st.error(f"❌ 매수 실패 (종가 ${price} > 목표가 ${target_loc}) - 너무 비싸서 안 삼")
+            
+            # 5월의 다른 날짜들은 텍스트로만 표시 (로그 확인용)
+            else:
+                 st.text(f"📅 {check_date} | 종가: {price} | 이격도: {disp:.2f}% | 구간: {phase}")
+
+        # ---------------------------------------------------------
+        # [진단 코드 끝]
 
 
         conf = strategy[phase]
