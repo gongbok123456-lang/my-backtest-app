@@ -8,8 +8,8 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # --- [기본 설정 값] ---
-# 여기에 사용자님의 구글 시트 주소를 넣으세요 (매번 입력하기 귀찮으니까요)
-DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1dK11y5aTIhDGfpMduNsuSgTDlDoPo-OF6uE5FIePXVg/edit?gid=453499510#gid=453499510"
+# 사용자 구글 시트 주소 (필요시 수정하세요)
+DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/your-sheet-id/edit"
 
 # --- [페이지 설정] ---
 st.set_page_config(page_title="쪼꼬야옹 백테스트 연구소", page_icon="📈", layout="wide")
@@ -22,7 +22,7 @@ if 'trial_count' not in st.session_state:
 if 'last_backtest_result' not in st.session_state:
     st.session_state.last_backtest_result = None
 
-# --- [구글 시트 데이터 로드 함수] (날짜 파싱 강화 버전) ---
+# --- [구글 시트 데이터 로드 함수 (강력해진 날짜 처리)] ---
 @st.cache_data(ttl=600)
 def load_data_from_gsheet(url):
     try:
@@ -37,34 +37,71 @@ def load_data_from_gsheet(url):
 
         sheet = client.open_by_url(url)
         worksheet = sheet.get_worksheet(0)
+        
+        # 전체 데이터 가져오기 (값 있는 부분만)
         rows = worksheet.get_all_values()
         
         if not rows:
-            st.error("시트가 비어있습니다.")
+            st.error("❌ 시트가 비어있습니다.")
             return None
 
+        # 데이터프레임 변환
         raw_df = pd.DataFrame(rows)
         
+        # 🟢 [디버깅] 로드된 원본 데이터 5줄 확인용 (사이드바에 표시됨)
+        with st.sidebar.expander("🔍 로드된 원본 데이터 확인"):
+            st.write("총 행 수:", len(raw_df))
+            st.write(raw_df.head(10))
+
         # 5행부터 데이터 시작, G열(6), I열(8), L열(11) 추출
         try:
             df = raw_df.iloc[4:, [6, 8, 11]].copy()
             df.columns = ['Date', 'QQQ', 'SOXL']
         except IndexError:
-            st.error("❌ 시트 열 개수 부족 (G, I, L열 확인 필요)")
+            st.error("❌ 시트 열 개수가 부족합니다. (G, I, L열 확인 필요)")
             return None
 
-        # 🟢 [수정됨] 날짜 전처리 (한글 요일 제거)
-        # 예: "26.01.14(수)" -> "26.01.14" -> 2026-01-14
-        # 정규표현식으로 괄호와 그 안의 내용 제거
-        df['Date'] = df['Date'].astype(str).str.replace(r'\(.*\)', '', regex=True).str.strip()
+        # 🟢 [핵심] 날짜 정밀 전처리
+        # 1. 문자열로 변환하고 양옆 공백 제거
+        df['Date'] = df['Date'].astype(str).str.strip()
         
-        # 날짜 변환 (자동 추론)
+        # 2. 빈 값 제거
+        df = df[df['Date'] != '']
+        
+        # 3. 요일 제거: "(월)", "(Tue)" 등 괄호와 그 안의 내용 삭제
+        df['Date'] = df['Date'].str.replace(r'\(.*?\)', '', regex=True).str.strip()
+        
+        # 4. 날짜 구분자 통일 (점 . -> 하이픈 -)
+        df['Date'] = df['Date'].str.replace('.', '-')
+        
+        # 5. 연도가 2자리인 경우 4자리로 보정 (예: 10-01-11 -> 2010-01-11)
+        # 문자열 길이가 짧으면(8자 이하) 앞에 '20'을 붙여줌
+        def fix_year(date_str):
+            try:
+                parts = date_str.split('-')
+                if len(parts) == 3:
+                    y, m, d = parts
+                    if len(y) == 2:
+                        return f"20{y}-{m}-{d}"
+                return date_str
+            except:
+                return date_str
+
+        df['Date'] = df['Date'].apply(fix_year)
+
+        # 6. 최종 날짜 변환
         df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
         
-        # 날짜 없는 행 제거
+        # 변환 실패한 행 확인 (디버깅용)
+        failed_rows = df[pd.isna(df['Date'])]
+        if not failed_rows.empty:
+            with st.sidebar.expander("⚠️ 날짜 변환 실패한 행"):
+                st.write(failed_rows)
+
+        # 유효한 날짜만 남기기
         df = df.dropna(subset=['Date'])
         
-        # 숫자 변환
+        # 숫자 변환 (콤마, 달러 제거)
         for col in ['QQQ', 'SOXL']:
             df[col] = df[col].astype(str).str.replace(',', '').str.replace('$', '')
             df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -72,17 +109,15 @@ def load_data_from_gsheet(url):
         df.set_index('Date', inplace=True)
         df.sort_index(inplace=True)
         
-        # 데이터가 너무 적으면 경고
-        if len(df) < 10:
-            st.warning(f"⚠️ 데이터가 {len(df)}개 뿐입니다. 날짜 형식을 확인해주세요.")
-            st.write("로드된 데이터 예시:", df.head())
-        
+        if len(df) == 0:
+            st.error("❌ 유효한 데이터가 0개입니다. 날짜 형식을 다시 확인해주세요.")
+            return None
+            
         return df
 
     except Exception as e:
         st.error(f"구글 시트 로드 실패: {e}")
         return None
-
 
 # --- [유틸리티 함수] ---
 def excel_round_up(n, decimals=0):
@@ -96,27 +131,22 @@ def excel_round_down(n, decimals=0):
 def calculate_loc_quantity(seed_amount, order_price, close_price, buy_range, max_add_orders):
     if seed_amount is None or order_price is None or order_price <= 0:
         return 0
-
     base_qty = int(seed_amount / order_price)
     multiplier = (1 + buy_range) if buy_range <= 0 else (1 - buy_range)
     bot_price = math.floor(order_price * multiplier * 100 + 1e-9) / 100
-
     if bot_price > 0:
         qty_at_bot_float = seed_amount / bot_price
         qty_at_order_float = seed_amount / order_price
         fix_qty = int((qty_at_bot_float - qty_at_order_float) / max_add_orders)
     else:
         fix_qty = 0
-
     if fix_qty < 0: fix_qty = 0
     final_qty = 0
-
     current_cum_qty = base_qty
     if current_cum_qty > 0:
         implied_price = seed_amount / current_cum_qty
         if implied_price >= close_price and implied_price >= bot_price:
             final_qty += base_qty
-
     for i in range(1, max_add_orders + 1):
         step_qty = fix_qty
         current_cum_qty = base_qty + (i * step_qty)
@@ -124,7 +154,6 @@ def calculate_loc_quantity(seed_amount, order_price, close_price, buy_range, max
         implied_price = seed_amount / current_cum_qty
         if implied_price >= close_price and implied_price >= bot_price:
             final_qty += step_qty
-
     return final_qty
 
 # --- [백테스트 엔진] ---
@@ -301,10 +330,8 @@ st.title("📊 쪼꼬야옹 백테스트 연구소")
 
 with st.sidebar:
     st.header("⚙️ 기본 설정")
-    
-    # 🟢 [변경] 파일 업로드 -> 구글 시트 주소 입력
     sheet_url = st.text_input("🔗 구글 시트 주소 (URL)", value=DEFAULT_SHEET_URL)
-    st.caption("※ 시트에 'Date', 'SOXL', 'QQQ' 컬럼이 있어야 합니다.")
+    st.caption("※ 시트에 'Date', 'SOXL', 'QQQ' 데이터가 있어야 합니다.")
     
     st.subheader("💰 자산 및 복리 설정")
     balance = st.number_input("초기 자본 ($)", value=10000)
@@ -318,9 +345,7 @@ with st.sidebar:
     start_date = st.date_input("시작일", pd.to_datetime("2014-01-01"))
     end_date = st.date_input("종료일", pd.to_datetime("2025-12-31"))
 
-# 2. 데이터 로드 및 메인 로직
 if sheet_url:
-    # 데이터 로드 (캐시 사용)
     df = load_data_from_gsheet(sheet_url)
     
     if df is not None:
@@ -461,6 +486,7 @@ if sheet_url:
             col_btn1, col_btn2 = st.columns([1, 4])
             
             if col_btn1.button("🚀 최적화 시작", type="primary", use_container_width=True):
+                # 🟢 [핵심] 기존 '현재 설정' 지우기
                 st.session_state.opt_results = [r for r in st.session_state.opt_results if r.get('Label') != '🎯 현재 설정']
 
                 curr_res = backtest_engine_web(df, {
@@ -567,11 +593,8 @@ if sheet_url:
 
 MY_BEST_PARAMS = {{
     'ma_window': {sel_row['ma_window']},
-    # 바닥
     'bt_cond': {sel_row['bt_cond']:.2f}, 'bt_buy': {sel_row['bt_buy']}, 'bt_prof': {sel_row['bt_prof']*100:.1f}, 'bt_time': {sel_row['bt_time']},
-    # 중간
     'md_buy': {sel_row['md_buy']}, 'md_prof': {sel_row['md_prof']*100:.1f}, 'md_time': {sel_row['md_time']},
-    # 천장
     'cl_cond': {sel_row['cl_cond']:.2f}, 'cl_buy': {sel_row['cl_buy']}, 'cl_prof': {sel_row['cl_prof']*100:.1f}, 'cl_time': {sel_row['cl_time']}
 }}"""
                     st.code(code_text, language='python')
