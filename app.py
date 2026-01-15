@@ -22,10 +22,11 @@ if 'trial_count' not in st.session_state:
 if 'last_backtest_result' not in st.session_state:
     st.session_state.last_backtest_result = None
 
-# --- [구글 시트 데이터 로드 함수 (강력해진 날짜 처리)] ---
+# --- [구글 시트 데이터 로드 함수 (자동 컬럼 찾기)] ---
 @st.cache_data(ttl=600)
 def load_data_from_gsheet(url):
     try:
+        # 1. 인증 및 시트 연결
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds_dict = dict(st.secrets["gcp_service_account"])
         
@@ -38,44 +39,60 @@ def load_data_from_gsheet(url):
         sheet = client.open_by_url(url)
         worksheet = sheet.get_worksheet(0)
         
-        # 전체 데이터 가져오기 (값 있는 부분만)
+        # 2. 전체 데이터 가져오기
         rows = worksheet.get_all_values()
-        
         if not rows:
             st.error("❌ 시트가 비어있습니다.")
             return None
 
-        # 데이터프레임 변환
-        raw_df = pd.DataFrame(rows)
+        # 3. 헤더 위치 찾기 (QQQ, SOXL 위치 자동 탐색)
+        # 보통 1~5행 사이에 헤더가 있으므로 그 안에서 찾습니다.
+        header_row_idx = -1
+        idx_qqq = -1
+        idx_soxl = -1
         
-        # 🟢 [디버깅] 로드된 원본 데이터 5줄 확인용 (사이드바에 표시됨)
-        with st.sidebar.expander("🔍 로드된 원본 데이터 확인"):
-            st.write("총 행 수:", len(raw_df))
-            st.write(raw_df.head(10))
-
-        # 5행부터 데이터 시작, G열(6), I열(8), L열(11) 추출
-        try:
-            df = raw_df.iloc[4:, [6, 8, 11]].copy()
-            df.columns = ['Date', 'QQQ', 'SOXL']
-        except IndexError:
-            st.error("❌ 시트 열 개수가 부족합니다. (G, I, L열 확인 필요)")
+        for i, row in enumerate(rows[:10]): # 상위 10줄만 검색
+            if "QQQ" in row and "SOXL" in row:
+                header_row_idx = i
+                idx_qqq = row.index("QQQ")
+                idx_soxl = row.index("SOXL")
+                break
+        
+        if header_row_idx == -1:
+            st.error("❌ 시트에서 'QQQ'와 'SOXL' 헤더를 찾을 수 없습니다.")
             return None
 
-        # 🟢 [핵심] 날짜 정밀 전처리
-        # 1. 문자열로 변환하고 양옆 공백 제거
+        # 4. 데이터 추출 (헤더 2줄 아래부터 데이터 시작)
+        # QQQ: Header(Date), Header+1(Close)
+        # SOXL: Header(Date), Header+1(Close)
+        data_start_idx = header_row_idx + 2 
+        
+        # 필요한 열만 뽑아서 DataFrame 만들기
+        # Date는 QQQ쪽 Date를 사용 (Index: idx_qqq)
+        # QQQ Close (Index: idx_qqq + 1)
+        # SOXL Close (Index: idx_soxl + 1)
+        
+        extracted_data = []
+        for row in rows[data_start_idx:]:
+            if len(row) > max(idx_qqq, idx_soxl) + 1: # 행 길이가 충분한지 확인
+                try:
+                    d = row[idx_qqq] # Date
+                    q = row[idx_qqq + 1] # QQQ
+                    s = row[idx_soxl + 1] # SOXL
+                    extracted_data.append([d, q, s])
+                except IndexError:
+                    continue
+
+        df = pd.DataFrame(extracted_data, columns=['Date', 'QQQ', 'SOXL'])
+
+        # 5. 데이터 전처리 (날짜/숫자 변환)
+        # 날짜 문자열 정리
         df['Date'] = df['Date'].astype(str).str.strip()
+        df = df[df['Date'] != ''] # 빈 날짜 제거
+        df['Date'] = df['Date'].str.replace(r'\(.*?\)', '', regex=True).str.strip() # (월) 제거
+        df['Date'] = df['Date'].str.replace('.', '-') # 포맷 통일
         
-        # 2. 빈 값 제거
-        df = df[df['Date'] != '']
-        
-        # 3. 요일 제거: "(월)", "(Tue)" 등 괄호와 그 안의 내용 삭제
-        df['Date'] = df['Date'].str.replace(r'\(.*?\)', '', regex=True).str.strip()
-        
-        # 4. 날짜 구분자 통일 (점 . -> 하이픈 -)
-        df['Date'] = df['Date'].str.replace('.', '-')
-        
-        # 5. 연도가 2자리인 경우 4자리로 보정 (예: 10-01-11 -> 2010-01-11)
-        # 문자열 길이가 짧으면(8자 이하) 앞에 '20'을 붙여줌
+        # 연도 보정 (10 -> 2010)
         def fix_year(date_str):
             try:
                 parts = date_str.split('-')
@@ -88,17 +105,9 @@ def load_data_from_gsheet(url):
                 return date_str
 
         df['Date'] = df['Date'].apply(fix_year)
-
-        # 6. 최종 날짜 변환
         df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
         
-        # 변환 실패한 행 확인 (디버깅용)
-        failed_rows = df[pd.isna(df['Date'])]
-        if not failed_rows.empty:
-            with st.sidebar.expander("⚠️ 날짜 변환 실패한 행"):
-                st.write(failed_rows)
-
-        # 유효한 날짜만 남기기
+        # 유효한 데이터만 남기기
         df = df.dropna(subset=['Date'])
         
         # 숫자 변환 (콤마, 달러 제거)
@@ -109,8 +118,12 @@ def load_data_from_gsheet(url):
         df.set_index('Date', inplace=True)
         df.sort_index(inplace=True)
         
-        if len(df) == 0:
-            st.error("❌ 유효한 데이터가 0개입니다. 날짜 형식을 다시 확인해주세요.")
+        # 디버깅용: 데이터가 잘 로드되었는지 확인
+        if len(df) > 0:
+            st.sidebar.success(f"✅ 데이터 로드 성공! ({len(df)}행)")
+            # st.sidebar.dataframe(df.head()) # 필요시 주석 해제하여 확인
+        else:
+            st.error("❌ 유효한 데이터가 0개입니다.")
             return None
             
         return df
