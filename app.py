@@ -23,25 +23,29 @@ if 'last_backtest_result' not in st.session_state:
     st.session_state.last_backtest_result = None
 
 # --- [구글 시트 데이터 로드 함수] ---
-@st.cache_data(ttl=600) # 10분마다 갱신 (API 호출 절약)
+@st.cache_data(ttl=600)
 def load_data_from_gsheet(url):
     try:
         # Streamlit Secrets에서 인증 정보 가져오기
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        creds_dict = dict(st.secrets["gcp_service_account"]) # Secrets에 저장된 키 사용
+        
+        # 🟢 [수정됨] 딕셔너리로 변환 후 private_key 오류 보정
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        
+        # private_key에 있는 "\n" 문자열을 실제 줄바꿈 문자로 치환
+        if "private_key" in creds_dict:
+            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+            
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
 
         # 시트 열기
         sheet = client.open_by_url(url)
-        # 첫 번째 워크시트 가져오기 (필요하면 sheet.worksheet("시트이름")으로 변경 가능)
         worksheet = sheet.get_worksheet(0) 
         
-        # 데이터프레임 변환
         data = worksheet.get_all_records()
         df = pd.DataFrame(data)
         
-        # 날짜 컬럼 처리 (컬럼명이 'Date'라고 가정, 다르면 수정 필요)
         if 'Date' in df.columns:
             df['Date'] = pd.to_datetime(df['Date'])
             df.set_index('Date', inplace=True)
@@ -49,12 +53,9 @@ def load_data_from_gsheet(url):
             st.error("❌ 시트에 'Date' 컬럼이 없습니다.")
             return None
             
-        # SOXL 가격 처리 (컬럼명이 'SOXL'이라고 가정)
         if 'SOXL' in df.columns:
-            # 문자열인 경우 콤마 제거 등 숫자 변환
             df['SOXL'] = pd.to_numeric(df['SOXL'].astype(str).str.replace(',', ''), errors='coerce')
         
-        # QQQ 처리 (필요시)
         if 'QQQ' in df.columns:
             df['QQQ'] = pd.to_numeric(df['QQQ'].astype(str).str.replace(',', ''), errors='coerce')
             
@@ -62,6 +63,7 @@ def load_data_from_gsheet(url):
         return df
 
     except Exception as e:
+        # 에러 메시지를 좀 더 자세히 출력
         st.error(f"구글 시트 로드 실패: {e}")
         return None
 
