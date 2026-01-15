@@ -738,93 +738,99 @@ MY_BEST_PARAMS = {{
                 with c_buy:
                     st.subheader("🛒 오늘의 매수 주문 (LOC)")
                     
-                    # 1. 구간별 매수 비율 결정 (오늘의 시장 상황)
-                    if "바닥" in curr_phase: target_rate = dash_params['bt_buy']
-                    elif "천장" in curr_phase: target_rate = dash_params['cl_buy']
-                    else: target_rate = dash_params['md_buy']
-                        
-                    # 2. LOC 매수 가격 계산 (오늘의 기준)
+                    # 0. 파라미터 가져오기
+                    n_split = int(dash_params['add_order_cnt'])  # 분할 횟수
+                    loc_range = dash_params['loc_range']         # LOC 범위 (%)
+                    
+                    if n_split < 1: n_split = 1
+
+                    # 1. 구간별 기본 매수 비율 (첫 번째 주문 기준)
+                    if "바닥" in curr_phase: start_rate = dash_params['bt_buy']
+                    elif "천장" in curr_phase: start_rate = dash_params['cl_buy']
+                    else: start_rate = dash_params['md_buy']
+                    
                     base_price = last_row['SOXL']
+                    one_time_seed = total_equity / 10  # 1개 티어당 배정된 총 시드
                     
-                    # 신규 진입용 LOC 가격
-                    new_loc_price = excel_round_down(base_price * (1 + target_rate/100.0), 2)
-                    
-                    # 3. 1회 기본 시드 계산
-                    one_time_seed = total_equity / 10
-                    
-                    st.markdown(f"**📉 기준 종가**: ${base_price} | **구간**: {curr_phase} ({target_rate}%)")
+                    st.markdown(f"**📉 기준 종가**: ${base_price} | **구간**: {curr_phase}")
+                    st.caption(f"⚙️ 설정: {n_split}분할 매수 / LOC 범위 {loc_range}%")
                     st.markdown("---")
 
-                    # --- [B] 보유 종목 추가 매수(물타기/불타기) 계산 ---
-                    # 조건 없이 모든 보유 종목에 대해 LOC 주문 계산
-                    add_buy_list = []
-                    
-                    for h in current_holdings:
-                        # h 구조: [매수가, 보유일, 수량, 모드, 티어, 매수일]
-                        buy_p, days, qty, mode, tier, buy_dt = h
-                        
-                        # 추가 매수 LOC 가격 (오늘의 기준가 적용)
-                        # 전략에 따라 '평단' 기준이 아닌 '전일 종가' 기준으로 LOC를 잡습니다.
-                        add_loc_price = excel_round_down(base_price * (1 + target_rate/100.0), 2)
-                        
-                        # 예상 투입 금액
-                        needed_cash = min(one_time_seed, current_cash)
-                        add_qty = math.floor(needed_cash / add_loc_price) if add_loc_price > 0 else 0
-                        
-                        if add_qty > 0:
-                            # 평단가와 LOC 가격 비교 (물타기인지 불타기인지 판단)
-                            if add_loc_price < buy_p:
-                                note = "💧물타기 (평단인하)"
-                                color = "blue"
-                            else:
-                                note = "🔥불타기 (평단인상)"
-                                color = "red"
-                                
-                            add_buy_list.append({
-                                '티어': tier,
-                                '내평단': buy_p,
-                                'LOC가격': add_loc_price,
-                                '수량': add_qty,
-                                '비고': note,
-                                '색상': color
-                            })
-
-                    # --- [C] 결과 출력 ---
-                    
-                    # 1. 신규 매수 출력 (슬롯 여유 있을 때만)
+                    # --- [A] 신규 진입 (Tier N+1) 계산 ---
                     if len(current_holdings) < 10:
-                        real_bet_money = min(one_time_seed, current_cash)
-                        new_qty = math.floor(real_bet_money / new_loc_price) if new_loc_price > 0 else 0
+                        st.success(f"🆕 **신규 진입 (Tier {len(current_holdings)+1})**")
                         
-                        if new_qty > 0:
-                            st.success(f"🆕 **신규 진입 (Tier {len(current_holdings)+1})**")
-                            st.markdown(f"""
-                            ### 💵 **${new_loc_price}** (LOC) × **{new_qty}주**
-                            - 예상 투입: ${new_qty * new_loc_price:,.2f}
-                            """)
-                        else:
-                            st.warning("현금 부족으로 신규 진입 불가")
+                        # 분할 매수 계산
+                        seed_per_split = one_time_seed / n_split # 분할된 1회 주문 금액
+                        remaining_cash = current_cash
+                        
+                        for i in range(n_split):
+                            # 가격 단계 계산 (범위 내에서 등분)
+                            # i=0: start_rate (메인)
+                            # i=끝: start_rate - loc_range
+                            if n_split > 1:
+                                step = loc_range / (n_split - 1) if n_split > 1 else 0
+                                current_rate = start_rate - (i * step)
+                            else:
+                                current_rate = start_rate
+
+                            loc_p = excel_round_down(base_price * (1 + current_rate/100.0), 2)
+                            
+                            # 현금 체크 및 수량 계산
+                            real_bet = min(seed_per_split, remaining_cash)
+                            qty = math.floor(real_bet / loc_p) if loc_p > 0 else 0
+                            
+                            if qty > 0:
+                                remaining_cash -= (qty * loc_p) # 현금 소진 반영
+                                st.write(f"#{i+1} **${loc_p}** (LOC {current_rate:.2f}%) × **{qty}주**")
+                            else:
+                                st.caption(f"#{i+1} 현금 부족으로 주문 불가")
                     else:
-                        st.info("🚫 슬롯 꽉 참 (신규 매수 없음)")
+                        st.info("🚫 슬롯 꽉 참 (신규 진입 없음)")
 
                     st.markdown("---")
 
-                    # 2. 추가 매수 출력 (모든 보유 종목 표시)
-                    if add_buy_list:
-                        st.write(f"🔄 **보유 종목 추가 매수 대기 ({len(add_buy_list)}건)**")
+                    # --- [B] 보유 종목 추가 매수 (물타기) 계산 ---
+                    # 모든 보유 티어에 대해 분할 주문 생성
+                    if current_holdings:
+                        st.write(f"🔄 **보유 종목 추가 매수 ({len(current_holdings)}건)**")
                         
-                        for item in add_buy_list:
-                            # 카드 형태로 이쁘게 출력
+                        for h in current_holdings:
+                            buy_p, days, qty, mode, tier, buy_dt = h
+                            
                             with st.container():
-                                c1, c2 = st.columns([3, 2])
-                                with c1:
-                                    st.markdown(f"**Tier {item['티어']}** (평단 ${item['내평단']})")
-                                    st.caption(f":{item['색상']}[{item['비고']}]")
-                                with c2:
-                                    st.markdown(f"**${item['LOC가격']}** × **{item['수량']}주**")
+                                st.markdown(f"**Tier {tier}** (평단 ${buy_p})")
+                                
+                                # 분할 매수 루프
+                                seed_per_split = one_time_seed / n_split
+                                remaining_cash = current_cash # (주의: 실제로는 신규매수와 현금 공유하므로 로직상 우선순위 필요하나, 여기선 단순 표시)
+                                
+                                has_order = False
+                                for i in range(n_split):
+                                    if n_split > 1:
+                                        step = loc_range / (n_split - 1)
+                                        current_rate = start_rate - (i * step)
+                                    else:
+                                        current_rate = start_rate
+                                    
+                                    add_loc_p = excel_round_down(base_price * (1 + current_rate/100.0), 2)
+                                    
+                                    # 평단가 비교 (물타기/불타기)
+                                    icon = "💧" if add_loc_p < buy_p else "🔥"
+                                    
+                                    real_bet = min(seed_per_split, remaining_cash)
+                                    add_qty = math.floor(real_bet / add_loc_p) if add_loc_p > 0 else 0
+                                    
+                                    if add_qty > 0:
+                                        st.write(f"{icon} #{i+1} **${add_loc_p}** ({current_rate:.2f}%) × **{add_qty}주**")
+                                        has_order = True
+                                    
+                                if not has_order:
+                                    st.caption("주문 가능 현금 없음")
+                                
                                 st.divider()
                     else:
-                        st.write("보유 중인 종목이 없습니다.")
+                        st.write("보유 종목 없음")
 
                 with c_sell:
                     st.subheader("💰 매도 대기 물량 (지정가)")
