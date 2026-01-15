@@ -21,55 +21,7 @@ if 'trial_count' not in st.session_state:
 if 'last_backtest_result' not in st.session_state:
     st.session_state.last_backtest_result = None
 
-# --- [유틸리티 함수 (안전장치 추가)] ---
-def excel_round_up(n, decimals=0):
-    if pd.isna(n) or n == np.inf or n == -np.inf: return 0
-    multiplier = 10 ** decimals
-    return math.ceil(n * multiplier - 1e-9) / multiplier
-
-def excel_round_down(n, decimals=0):
-    if pd.isna(n) or n == np.inf or n == -np.inf: return 0
-    multiplier = 10 ** decimals
-    return math.floor(n * multiplier + 1e-9) / multiplier
-
-def calculate_loc_quantity(seed_amount, order_price, close_price, buy_range, max_add_orders):
-    if seed_amount is None or order_price is None or order_price <= 0: return 0
-    
-    # 안전장치
-    if pd.isna(seed_amount) or pd.isna(order_price) or pd.isna(close_price): return 0
-
-    base_qty = int(seed_amount / order_price)
-    multiplier = (1 + buy_range) if buy_range <= 0 else (1 - buy_range)
-    bot_price = excel_round_down(order_price * multiplier, 2)
-
-    fix_qty = 0
-    if bot_price > 0:
-        qty_at_bot = seed_amount / bot_price
-        qty_at_order = seed_amount / order_price
-        fix_qty = int((qty_at_bot - qty_at_order) / max_add_orders)
-    if fix_qty < 0: fix_qty = 0
-
-    final_qty = 0
-    
-    # Step 0
-    if base_qty > 0:
-        implied_price = seed_amount / base_qty
-        if implied_price >= close_price and implied_price >= bot_price:
-            final_qty += base_qty
-
-    # Step 1 ~ Max
-    for i in range(1, max_add_orders + 1):
-        step_qty = fix_qty
-        current_cum_qty = base_qty + (i * step_qty)
-        if current_cum_qty <= 0: continue
-        
-        implied_price = seed_amount / current_cum_qty
-        if implied_price >= close_price and implied_price >= bot_price:
-            final_qty += step_qty
-
-    return final_qty
-
-# --- [구글 시트 데이터 로드 함수] ---
+# --- [구글 시트 데이터 로드 함수 (독립 데이터 병합)] ---
 @st.cache_data(ttl=600)
 def load_data_from_gsheet(url):
     try:
@@ -90,57 +42,123 @@ def load_data_from_gsheet(url):
             st.error("❌ 시트가 비어있습니다.")
             return None
 
-        raw_df = pd.DataFrame(rows)
+        # 1. 헤더 위치 찾기 (QQQ, SOXL)
+        header_row_idx = -1
+        idx_qqq = -1
+        idx_soxl = -1
         
-        # 데이터 추출 (5행부터, G/I/L열)
-        try:
-            df = raw_df.iloc[4:, [6, 8, 11]].copy()
-            df.columns = ['Date', 'QQQ', 'SOXL']
-        except IndexError:
-            st.error("❌ 시트 열 개수 부족 (G, I, L열 확인)")
+        for i, row in enumerate(rows[:20]): # 상위 20줄 검색
+            if "QQQ" in row and "SOXL" in row:
+                header_row_idx = i
+                idx_qqq = row.index("QQQ")
+                idx_soxl = row.index("SOXL")
+                break
+        
+        if header_row_idx == -1:
+            st.error("❌ 시트에서 'QQQ'와 'SOXL' 헤더를 찾을 수 없습니다.")
             return None
 
-        # 날짜 전처리
-        df['Date'] = df['Date'].astype(str).str.strip()
-        df = df[df['Date'] != '']
-        df['Date'] = df['Date'].str.replace(r'\(.*?\)', '', regex=True).str.strip()
-        df['Date'] = df['Date'].str.replace('.', '-')
-        
-        def fix_year(date_str):
-            try:
-                parts = date_str.split('-')
-                if len(parts) == 3:
-                    y, m, d = parts
-                    if len(y) == 2: return f"20{y}-{m}-{d}"
-                return date_str
-            except: return date_str
-
-        df['Date'] = df['Date'].apply(fix_year)
-        df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-        
-        # 🟢 [중요] 날짜 없는 행 삭제
-        df = df.dropna(subset=['Date'])
-        
-        # 숫자 변환
-        for col in ['QQQ', 'SOXL']:
-            df[col] = df[col].astype(str).str.replace(',', '').str.replace('$', '')
-            df[col] = pd.to_numeric(df[col], errors='coerce')
+        # 2. 데이터 추출 함수 (날짜, 가격)
+        def extract_series(data_rows, col_idx, name):
+            # 헤더 아래(Date, Close) 다음 행부터 데이터 시작
+            # QQQ/SOXL 헤더 -> 그 아래 Date/Close 헤더 -> 그 아래 실제 데이터
+            start_row = header_row_idx + 2 
             
-        # 🟢 [중요] 가격 데이터가 없는(NaN) 행 삭제 (에러 원인 차단)
-        df = df.dropna(subset=['QQQ', 'SOXL'])
+            extracted = []
+            for r in data_rows[start_row:]:
+                if len(r) > col_idx + 1:
+                    d = r[col_idx]     # Date
+                    p = r[col_idx + 1] # Close
+                    if d and p: # 빈값 제외
+                        extracted.append([d, p])
+            
+            df_temp = pd.DataFrame(extracted, columns=['Date', name])
+            
+            # 날짜 정제
+            df_temp['Date'] = df_temp['Date'].astype(str).str.strip()
+            df_temp['Date'] = df_temp['Date'].str.replace(r'\(.*?\)', '', regex=True).str.strip()
+            df_temp['Date'] = df_temp['Date'].str.replace('.', '-')
+            
+            # 연도 보정
+            def fix_year(date_str):
+                try:
+                    parts = date_str.split('-')
+                    if len(parts) == 3 and len(parts[0]) == 2:
+                        return f"20{parts[0]}-{parts[1]}-{parts[2]}"
+                    return date_str
+                except: return date_str
+            
+            df_temp['Date'] = df_temp['Date'].apply(fix_year)
+            df_temp['Date'] = pd.to_datetime(df_temp['Date'], errors='coerce')
+            
+            # 가격 정제
+            df_temp[name] = df_temp[name].astype(str).str.replace(',', '').str.replace('$', '')
+            df_temp[name] = pd.to_numeric(df_temp[name], errors='coerce')
+            
+            df_temp.dropna(inplace=True)
+            return df_temp
+
+        # 3. QQQ와 SOXL 각각 추출
+        df_qqq = extract_series(rows, idx_qqq, 'QQQ')
+        df_soxl = extract_series(rows, idx_soxl, 'SOXL')
+
+        # 4. 날짜 기준 병합 (Inner Join: 둘 다 데이터가 있는 날만)
+        df_merged = pd.merge(df_qqq, df_soxl, on='Date', how='inner')
         
-        df.set_index('Date', inplace=True)
-        df.sort_index(inplace=True)
+        df_merged.set_index('Date', inplace=True)
+        df_merged.sort_index(inplace=True)
         
-        if len(df) == 0:
-            st.error("❌ 유효한 데이터가 없습니다.")
+        if len(df_merged) == 0:
+            st.error("❌ 날짜가 일치하는 데이터가 없습니다.")
             return None
             
-        return df
+        return df_merged
 
     except Exception as e:
         st.error(f"구글 시트 로드 실패: {e}")
         return None
+
+# --- [유틸리티 함수] ---
+def excel_round_up(n, decimals=0):
+    if pd.isna(n) or n == np.inf or n == -np.inf: return 0
+    multiplier = 10 ** decimals
+    return math.ceil(n * multiplier - 1e-9) / multiplier
+
+def excel_round_down(n, decimals=0):
+    if pd.isna(n) or n == np.inf or n == -np.inf: return 0
+    multiplier = 10 ** decimals
+    return math.floor(n * multiplier + 1e-9) / multiplier
+
+def calculate_loc_quantity(seed_amount, order_price, close_price, buy_range, max_add_orders):
+    if seed_amount is None or order_price is None or order_price <= 0: return 0
+    if pd.isna(seed_amount) or pd.isna(order_price) or pd.isna(close_price): return 0
+
+    base_qty = int(seed_amount / order_price)
+    multiplier = (1 + buy_range) if buy_range <= 0 else (1 - buy_range)
+    bot_price = excel_round_down(order_price * multiplier, 2)
+
+    fix_qty = 0
+    if bot_price > 0:
+        qty_at_bot = seed_amount / bot_price
+        qty_at_order = seed_amount / order_price
+        fix_qty = int((qty_at_bot - qty_at_order) / max_add_orders)
+    if fix_qty < 0: fix_qty = 0
+
+    final_qty = 0
+    if base_qty > 0:
+        implied_price = seed_amount / base_qty
+        if implied_price >= close_price and implied_price >= bot_price:
+            final_qty += base_qty
+
+    for i in range(1, max_add_orders + 1):
+        step_qty = fix_qty
+        current_cum_qty = base_qty + (i * step_qty)
+        if current_cum_qty <= 0: continue
+        implied_price = seed_amount / current_cum_qty
+        if implied_price >= close_price and implied_price >= bot_price:
+            final_qty += step_qty
+
+    return final_qty
 
 # --- [백테스트 엔진] ---
 def backtest_engine_web(df, params):
@@ -186,11 +204,7 @@ def backtest_engine_web(df, params):
     for i in range(len(df)):
         row = df.iloc[i]
         today_close = row['SOXL']
-        
-        # 🟢 [안전장치] 가격이 비어있으면 건너뛰기
-        if pd.isna(today_close) or today_close <= 0:
-            continue
-
+        if pd.isna(today_close) or today_close <= 0: continue
         if params.get('force_round', True): today_close = round(today_close, 2)
 
         disp = row['Basis_Disp'] if not pd.isna(row['Basis_Disp']) else 1.0
@@ -243,8 +257,6 @@ def backtest_engine_web(df, params):
             seed_equity += daily_net_profit_sum * rate
             
         prev_c = row['Prev_Close'] if not pd.isna(row['Prev_Close']) else today_close
-        
-        # 🟢 [안전장치] 전일 종가가 비정상적이면 오늘 종가로 대체
         if pd.isna(prev_c): prev_c = today_close
             
         target_p = excel_round_down(prev_c * (1 + conf['buy'] / 100), 2)
