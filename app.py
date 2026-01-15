@@ -214,6 +214,34 @@ def backtest_engine_web(df, params):
         elif disp > strategy['Ceiling']['cond']: phase = 'Ceiling'
         else: phase = 'Middle'
         
+	# [진단 코드 시작] 2025년 5월 22일만 콕 집어서 확인
+        target_date_str = date.strftime('%Y-%m-%d')
+        if target_date_str == "2025-05-22":
+            # 1. 구간 판단 시뮬레이션
+            if disp < params['bt_cond']: test_mode = 'Bottom'; test_buy_pct = params['bt_buy']
+            elif disp > params['cl_cond']: test_mode = 'Ceiling'; test_buy_pct = params['cl_buy']
+            else: test_mode = 'Middle'; test_buy_pct = params['md_buy']
+            
+            # 2. LOC 가격 계산
+            if i > 0:
+                prev_c = df.iloc[i-1]['SOXL']
+                calc_loc = excel_round_down(prev_c * (1 + test_buy_pct/100.0), 2)
+            else:
+                calc_loc = 0
+                
+            print(f"--- 🚨 5월 22일 정밀 진단 🚨 ---")
+            print(f"날짜: {target_date_str}")
+            print(f"QQQ 이격도: {disp:.4f}% (설정 기준: 바닥{params['bt_cond']}, 천장{params['cl_cond']})")
+            print(f"판단된 모드: {test_mode}")
+            print(f"적용된 매수 비율: {test_buy_pct}%")
+            print(f"전일 종가: {df.iloc[i-1]['SOXL']}")
+            print(f"계산된 매수 목표가(LOC): {calc_loc}")
+            print(f"당일 종가(Price): {price}")
+            print(f"매수 성공 여부(Price <= LOC): {price <= calc_loc}")
+            print(f"현재 보유 슬롯: {len(holdings)}/10")
+            print(f"-------------------------------")
+        # [진단 코드 끝]
+
         conf = strategy[phase]
         target_seed_float = seed_equity / MAX_SLOTS
         target_seed = int(target_seed_float + 0.5)
