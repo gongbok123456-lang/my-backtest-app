@@ -331,7 +331,7 @@ def backtest_engine_web(df, params):
         'Yearly': yearly_ret,
         'Params': params,
         'TradeLog': pd.DataFrame(trade_log),
-        'DailyLog': pd.DataFrame(daily_log)
+        'DailyLog': pd.DataFrame(daily_log),
 	'CurrentHoldings': holdings,  # <--- 이 줄을 꼭 추가해주세요! (현재 보유 종목 리스트)
         'LastData': df.iloc[-1]
     }
