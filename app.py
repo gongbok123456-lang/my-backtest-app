@@ -738,14 +738,15 @@ MY_BEST_PARAMS = {{
                 with c_buy:
                     st.subheader("🛒 오늘의 매수 주문 (LOC)")
                     
-                    # --- [A] 신규 매수 로직 (기존과 동일) ---
-                    # 1. 구간별 매수 비율
+                    # 1. 구간별 매수 비율 결정 (오늘의 시장 상황)
                     if "바닥" in curr_phase: target_rate = dash_params['bt_buy']
                     elif "천장" in curr_phase: target_rate = dash_params['cl_buy']
                     else: target_rate = dash_params['md_buy']
-                    
-                    # 2. LOC 가격 계산 (신규 진입용)
+                        
+                    # 2. LOC 매수 가격 계산 (오늘의 기준)
                     base_price = last_row['SOXL']
+                    
+                    # 신규 진입용 LOC 가격
                     new_loc_price = excel_round_down(base_price * (1 + target_rate/100.0), 2)
                     
                     # 3. 1회 기본 시드 계산
@@ -754,39 +755,39 @@ MY_BEST_PARAMS = {{
                     st.markdown(f"**📉 기준 종가**: ${base_price} | **구간**: {curr_phase} ({target_rate}%)")
                     st.markdown("---")
 
-                    # --- [B] 추가 매수(물타기) 감지 로직 ---
-                    # 보유 중인 종목들을 검사해서 추가 매수가 필요한지 확인합니다.
+                    # --- [B] 보유 종목 추가 매수(물타기/불타기) 계산 ---
+                    # 조건 없이 모든 보유 종목에 대해 LOC 주문 계산
                     add_buy_list = []
                     
                     for h in current_holdings:
                         # h 구조: [매수가, 보유일, 수량, 모드, 티어, 매수일]
                         buy_p, days, qty, mode, tier, buy_dt = h
                         
-                        # 전략에 따라 추가 매수 기준이 다를 수 있음 (여기서는 예시로 -10% 하락 시로 가정하거나, 별도 파라미터 연동)
-                        # 보통은 '전일 종가'가 '내 평단'보다 많이 떨어졌을 때 실행
-                        # 사용자님 전략의 'LOC 범위'나 '추가 주문 분할 수' 등을 활용
+                        # 추가 매수 LOC 가격 (오늘의 기준가 적용)
+                        # 전략에 따라 '평단' 기준이 아닌 '전일 종가' 기준으로 LOC를 잡습니다.
+                        add_loc_price = excel_round_down(base_price * (1 + target_rate/100.0), 2)
                         
-                        # 예시 로직: 현재가가 내 매수가보다 'LOC 범위' 만큼 더 떨어지면 추가 매수 시그널
-                        # (정확한 전략 로직에 맞춰 수정 필요: 여기서는 보수적으로 '현재가' 기준으로 판단)
+                        # 예상 투입 금액
+                        needed_cash = min(one_time_seed, current_cash)
+                        add_qty = math.floor(needed_cash / add_loc_price) if add_loc_price > 0 else 0
                         
-                        # 만약 전일 종가가 내 매수가보다 낮다면 추가 매수 고려
-                        if base_price < buy_p:
-                             # 추가 매수 목표가 (전일 종가 대비 LOC 비율 적용)
-                            add_loc_price = excel_round_down(base_price * (1 + target_rate/100.0), 2)
-                            
-                            # 예상 투입 금액 (1회 시드)
-                            needed_cash = min(one_time_seed, current_cash)
-                            add_qty = math.floor(needed_cash / add_loc_price) if add_loc_price > 0 else 0
-                            
-                            if add_qty > 0:
-                                add_buy_list.append({
-                                    '티어': tier,
-                                    '보유가': buy_p,
-                                    '현재가': base_price,
-                                    'LOC가격': add_loc_price,
-                                    '수량': add_qty,
-                                    '금액': needed_cash
-                                })
+                        if add_qty > 0:
+                            # 평단가와 LOC 가격 비교 (물타기인지 불타기인지 판단)
+                            if add_loc_price < buy_p:
+                                note = "💧물타기 (평단인하)"
+                                color = "blue"
+                            else:
+                                note = "🔥불타기 (평단인상)"
+                                color = "red"
+                                
+                            add_buy_list.append({
+                                '티어': tier,
+                                '내평단': buy_p,
+                                'LOC가격': add_loc_price,
+                                '수량': add_qty,
+                                '비고': note,
+                                '색상': color
+                            })
 
                     # --- [C] 결과 출력 ---
                     
@@ -797,25 +798,33 @@ MY_BEST_PARAMS = {{
                         
                         if new_qty > 0:
                             st.success(f"🆕 **신규 진입 (Tier {len(current_holdings)+1})**")
-                            st.write(f"👉 **${new_loc_price}** (LOC) × **{new_qty}주**")
-                            st.caption(f"(예상금액: ${new_qty * new_loc_price:,.0f})")
+                            st.markdown(f"""
+                            ### 💵 **${new_loc_price}** (LOC) × **{new_qty}주**
+                            - 예상 투입: ${new_qty * new_loc_price:,.2f}
+                            """)
                         else:
                             st.warning("현금 부족으로 신규 진입 불가")
                     else:
-                        st.info("꽉 참 (10/10) - 신규 매수 없음")
+                        st.info("🚫 슬롯 꽉 참 (신규 매수 없음)")
 
-                    # 2. 추가 매수 출력 (물타기)
+                    st.markdown("---")
+
+                    # 2. 추가 매수 출력 (모든 보유 종목 표시)
                     if add_buy_list:
-                        st.markdown("---")
-                        st.error(f"💧 **추가 매수(물타기) 감지: {len(add_buy_list)}건**")
+                        st.write(f"🔄 **보유 종목 추가 매수 대기 ({len(add_buy_list)}건)**")
+                        
                         for item in add_buy_list:
-                            st.markdown(f"""
-                            - **Tier {item['티어']}** (평단 ${item['보유가']})
-                            - ↳ 주문: **${item['LOC가격']}** (LOC) × **{item['수량']}주**
-                            """)
-                    elif len(current_holdings) > 0:
-                        st.markdown("---")
-                        st.write("✨ 추가 매수 필요한 종목 없음")
+                            # 카드 형태로 이쁘게 출력
+                            with st.container():
+                                c1, c2 = st.columns([3, 2])
+                                with c1:
+                                    st.markdown(f"**Tier {item['티어']}** (평단 ${item['내평단']})")
+                                    st.caption(f":{item['색상']}[{item['비고']}]")
+                                with c2:
+                                    st.markdown(f"**${item['LOC가격']}** × **{item['수량']}주**")
+                                st.divider()
+                    else:
+                        st.write("보유 중인 종목이 없습니다.")
 
                 with c_sell:
                     st.subheader("💰 매도 대기 물량 (지정가)")
