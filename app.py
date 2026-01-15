@@ -736,35 +736,86 @@ MY_BEST_PARAMS = {{
                 c_buy, c_sell = st.columns(2)
                 
                 with c_buy:
-                    st.subheader("🛒 오늘 매수할 주문 (LOC)")
+                    st.subheader("🛒 오늘의 매수 주문 (LOC)")
                     
-                    # 매수 타겟 계산
-                    if "바닥" in curr_phase: 
-                        target_rate = dash_params['bt_buy']
-                    elif "천장" in curr_phase: 
-                        target_rate = dash_params['cl_buy']
-                    else: 
-                        target_rate = dash_params['md_buy']
+                    # --- [A] 신규 매수 로직 (기존과 동일) ---
+                    # 1. 구간별 매수 비율
+                    if "바닥" in curr_phase: target_rate = dash_params['bt_buy']
+                    elif "천장" in curr_phase: target_rate = dash_params['cl_buy']
+                    else: target_rate = dash_params['md_buy']
+                    
+                    # 2. LOC 가격 계산 (신규 진입용)
+                    base_price = last_row['SOXL']
+                    new_loc_price = excel_round_down(base_price * (1 + target_rate/100.0), 2)
+                    
+                    # 3. 1회 기본 시드 계산
+                    one_time_seed = total_equity / 10
+                    
+                    st.markdown(f"**📉 기준 종가**: ${base_price} | **구간**: {curr_phase} ({target_rate}%)")
+                    st.markdown("---")
+
+                    # --- [B] 추가 매수(물타기) 감지 로직 ---
+                    # 보유 중인 종목들을 검사해서 추가 매수가 필요한지 확인합니다.
+                    add_buy_list = []
+                    
+                    for h in current_holdings:
+                        # h 구조: [매수가, 보유일, 수량, 모드, 티어, 매수일]
+                        buy_p, days, qty, mode, tier, buy_dt = h
                         
-                    target_price = excel_round_down(last_row['SOXL'] * (1 + target_rate/100.0), 2)
+                        # 전략에 따라 추가 매수 기준이 다를 수 있음 (여기서는 예시로 -10% 하락 시로 가정하거나, 별도 파라미터 연동)
+                        # 보통은 '전일 종가'가 '내 평단'보다 많이 떨어졌을 때 실행
+                        # 사용자님 전략의 'LOC 범위'나 '추가 주문 분할 수' 등을 활용
+                        
+                        # 예시 로직: 현재가가 내 매수가보다 'LOC 범위' 만큼 더 떨어지면 추가 매수 시그널
+                        # (정확한 전략 로직에 맞춰 수정 필요: 여기서는 보수적으로 '현재가' 기준으로 판단)
+                        
+                        # 만약 전일 종가가 내 매수가보다 낮다면 추가 매수 고려
+                        if base_price < buy_p:
+                             # 추가 매수 목표가 (전일 종가 대비 LOC 비율 적용)
+                            add_loc_price = excel_round_down(base_price * (1 + target_rate/100.0), 2)
+                            
+                            # 예상 투입 금액 (1회 시드)
+                            needed_cash = min(one_time_seed, current_cash)
+                            add_qty = math.floor(needed_cash / add_loc_price) if add_loc_price > 0 else 0
+                            
+                            if add_qty > 0:
+                                add_buy_list.append({
+                                    '티어': tier,
+                                    '보유가': buy_p,
+                                    '현재가': base_price,
+                                    'LOC가격': add_loc_price,
+                                    '수량': add_qty,
+                                    '금액': needed_cash
+                                })
+
+                    # --- [C] 결과 출력 ---
                     
-                    # 매수 수량 계산 (현금 범위 내)
-                    # 시드 분할 로직 (최대 슬롯 10개 가정)
-                    target_seed = total_equity / 10
-                    bet_amount = min(target_seed, current_cash)
-                    
-                    if len(current_holdings) >= 10:
-                        st.warning("🚫 보유 슬롯이 꽉 찼습니다 (10/10). 추가 매수 금지.")
-                    elif bet_amount < 10:
-                        st.warning("🚫 주문 가능 현금이 부족합니다.")
+                    # 1. 신규 매수 출력 (슬롯 여유 있을 때만)
+                    if len(current_holdings) < 10:
+                        real_bet_money = min(one_time_seed, current_cash)
+                        new_qty = math.floor(real_bet_money / new_loc_price) if new_loc_price > 0 else 0
+                        
+                        if new_qty > 0:
+                            st.success(f"🆕 **신규 진입 (Tier {len(current_holdings)+1})**")
+                            st.write(f"👉 **${new_loc_price}** (LOC) × **{new_qty}주**")
+                            st.caption(f"(예상금액: ${new_qty * new_loc_price:,.0f})")
+                        else:
+                            st.warning("현금 부족으로 신규 진입 불가")
                     else:
-                        st.success(f"**LOC 매수**를 준비하세요.")
-                        st.markdown(f"""
-                        - **매수 기준가**: ${target_price} ({target_rate}%)
-                        - **LOC 하단(-{dash_params['loc_range']}%)**: ${excel_round_down(target_price * (1 - dash_params['loc_range']/100), 2)}
-                        - **예상 투입 금액**: ${bet_amount:,.0f}
-                        """)
-                        st.caption("※ 실제 수량은 장마감 직전 가격에 따라 LOC 로직으로 결정됩니다.")
+                        st.info("꽉 참 (10/10) - 신규 매수 없음")
+
+                    # 2. 추가 매수 출력 (물타기)
+                    if add_buy_list:
+                        st.markdown("---")
+                        st.error(f"💧 **추가 매수(물타기) 감지: {len(add_buy_list)}건**")
+                        for item in add_buy_list:
+                            st.markdown(f"""
+                            - **Tier {item['티어']}** (평단 ${item['보유가']})
+                            - ↳ 주문: **${item['LOC가격']}** (LOC) × **{item['수량']}주**
+                            """)
+                    elif len(current_holdings) > 0:
+                        st.markdown("---")
+                        st.write("✨ 추가 매수 필요한 종목 없음")
 
                 with c_sell:
                     st.subheader("💰 매도 대기 물량 (지정가)")
