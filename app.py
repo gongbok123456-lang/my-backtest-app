@@ -204,6 +204,7 @@ def backtest_engine_web(df, params):
 
     for i in range(len(df)):
         row = df.iloc[i]
+	date = row.name
         today_close = row['SOXL']
         if pd.isna(today_close) or today_close <= 0: continue
         if params.get('force_round', True): today_close = round(today_close, 2)
@@ -218,13 +219,12 @@ def backtest_engine_web(df, params):
         # 날짜 데이터(date)를 강제로 문자열로 변환해서 확인합니다.
         check_date = str(date) 
 
-        # "2025-05" 또는 "25.05"가 포함된 날짜만 찾습니다.
+       # "2025-05" 또는 "25.05"가 포함된 날짜만 찾습니다.
         if "2025-05" in check_date or "25.05" in check_date:
             print(f"✅ 날짜 감지: {check_date} | 종가: {price} | 이격도: {disp:.2f}")
             
             # 22일 데이터 상세 분석
             if "22" in check_date: 
-                # 전일 종가 가져오기 (에러 방지용 try-except)
                 try:
                     prev_close = df.iloc[i-1]['SOXL']
                 except:
@@ -233,14 +233,13 @@ def backtest_engine_web(df, params):
                 print(f"   👉 22일 상세 진단")
                 print(f"   - 전일($): {prev_close} -> 금일($): {price}")
                 
-                # 매수 조건 재계산 (현재 파라미터 기준)
+                # 매수 조건 재계산
                 if disp < params['bt_cond']: t_mode = 'Bottom'
                 elif disp > params['cl_cond']: t_mode = 'Ceiling'
                 else: t_mode = 'Middle'
                 
                 print(f"   - 파이썬 판단 모드: {t_mode} (이격도 {disp:.2f}%)")
                 
-                # 모드별 매수 설정값 확인
                 if t_mode == 'Bottom': buy_rate = params['bt_buy']
                 elif t_mode == 'Ceiling': buy_rate = params['cl_buy']
                 else: buy_rate = params['md_buy']
@@ -248,7 +247,11 @@ def backtest_engine_web(df, params):
                 target_loc = excel_round_down(prev_close * (1 + buy_rate/100.0), 2)
                 print(f"   - 설정된 LOC 비율: {buy_rate}%")
                 print(f"   - 계산된 매수 타겟가: ${target_loc}")
-                print(f"   - 결과: {'매수 성공' if price <= target_loc else '매수 실패 (종가가 더 비쌈)'}")
+                
+                if price <= target_loc:
+                    print(f"   - 결과: 🟢 매수 성공 (종가 {price} <= 타겟 {target_loc})")
+                else:
+                    print(f"   - 결과: 🔴 매수 실패 (종가 {price} > 타겟 {target_loc})")
 
 
         conf = strategy[phase]
