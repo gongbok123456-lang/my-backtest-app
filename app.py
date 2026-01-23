@@ -163,33 +163,39 @@ def calculate_loc_quantity(seed_amount, order_price, close_price, buy_range, max
 
 # --- [백테스트 엔진] ---
 def backtest_engine_web(df, params):
-    df = df.copy()
+    f = df.copy()
     
-    # 1. [이평선] '일봉(Daily)' 기준으로 200일선 계산
-    # (슬라이더값 200을 '일' 단위로 적용해야 구글 시트와 값이 비슷해집니다)
-    ma_window = int(params['ma_window'])
-    df['MA_Daily'] = df['QQQ'].rolling(window=ma_window, min_periods=1).mean()
+    # ------------------------------------------------------------------
+    # [디버깅 모드] 구글 시트 비교용 데이터 생성
+    # ------------------------------------------------------------------
     
-    # 2. [이격도] 일별 이격도(%) 계산
-    # 단위: 퍼센트 (예: 9.78)
-    df['Disp_Daily_Pct'] = (df['QQQ'] / df['MA_Daily'] - 1) * 100
+    # 1. 주봉(Weekly) 변환
+    df_weekly = df['QQQ'].resample('W-FRI').last().to_frame()
     
-    # 3. [모드 고정] '매주 금요일'의 이격도를 다음 한 주간 적용
-    # 구글 시트의 로직(VR전략)을 따르기 위해 금요일 값을 추출하여 고정합니다.
+    # 2. MA 계산 (200일 -> 40주 로직 적용)
+    ma_daily_param = int(params['ma_window'])
+    ma_weekly_win = ma_daily_param // 5  # 200 // 5 = 40
+    if ma_weekly_win < 1: ma_weekly_win = 1
     
-    # (1) 금요일(W-FRI) 기준 데이터만 추출 (그 주의 마지막 값)
-    weekly_disp = df['Disp_Daily_Pct'].resample('W-FRI').last()
+    df_weekly['MA_Weekly'] = df_weekly['QQQ'].rolling(window=ma_weekly_win, min_periods=1).mean()
     
-    # (2) 주간 데이터를 다시 일별로 늘리기 (Forward Fill)
-    # 금요일에 확정된 이격도를 -> 다음날(토/일/월...)부터 쭉 적용
-    # shift(1)을 하는 이유: '오늘' 장 중에는 '어제까지 확정된' 모드를 보고 매매하기 위함
-    # (이번주 금요일 장 마감 전까지는 지난주 금요일 모드가 유지됨)
-    df['Basis_Disp'] = weekly_disp.reindex(df.index, method='ffill').shift(1).fillna(0)
+    # 3. 이격도 계산 (%)
+    df_weekly['Weekly_Disp_Pct'] = (df_weekly['QQQ'] / df_weekly['MA_Weekly'] - 1) * 100
+    
+    # 4. 일봉으로 확장 (ffill) & 전일 기준(shift 1) 적용
+    # '오늘' 매매할 때는 '지난주 금요일'에 확정된 값을 봅니다.
+    # 로그에 남길 값들도 똑같이 처리해서 df에 넣어둡니다.
+    
+    df_weekly_expanded = df_weekly.reindex(df.index, method='ffill').shift(1)
+    
+    df['Basis_Disp'] = df_weekly_expanded['Weekly_Disp_Pct'].fillna(0)
+    df['Log_QQQ_W'] = df_weekly_expanded['QQQ']       # 로그용: 주봉 종가
+    df['Log_MA_W']  = df_weekly_expanded['MA_Weekly'] # 로그용: 주봉 MA값
 
-    # 4. 전일 종가 준비 (매수 타겟 계산용)
+    # ------------------------------------------------------------------
+
     df['Prev_Close'] = df['SOXL'].shift(1)
     
-    # 날짜 필터링
     start_dt = pd.to_datetime(params['start_date'])
     end_dt = pd.to_datetime(params['end_date'])
     df = df[(df.index >= start_dt) & (df.index <= end_dt + pd.Timedelta(days=1))].copy()
@@ -274,7 +280,7 @@ def backtest_engine_web(df, params):
                 trade_count += 1
                 if real_profit > 0: win_count += 1
                 trade_log.append({
-                    'Date': dates[i], 'Type': 'Sell', 'Tier': tier, 'Phase': mode, 'Disp': disp,
+                    'Date': dates[i], 'Type': 'Sell', 'Tier': tier, 'Phase': mode, 'QQQ_W': row['Log_QQQ_W'], 'MA_W': row['Log_MA_W'], 'Disp': disp,
                     'Price': today_close, 'Qty': qty, 'Profit': real_profit, 'Reason': reason
                 })
             else:
@@ -338,7 +344,7 @@ def backtest_engine_web(df, params):
                         cash -= buy_amt
                         holdings.append([today_close, 0, real_qty, phase, new_tier, dates[i]])
                         trade_log.append({
-                            'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase, 'Disp': disp, 
+                            'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase, 'QQQ_W': row['Log_QQQ_W'], 'MA_W': row['Log_MA_W'], 'Disp': disp, 
                             'Price': today_close, 'Qty': real_qty, 'Profit': 0, 'Reason': 'LOC'
                         })
         
@@ -1018,6 +1024,7 @@ MY_BEST_PARAMS = {{
 else:
 
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
 
 
 
