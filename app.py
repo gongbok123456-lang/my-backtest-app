@@ -799,8 +799,22 @@ MY_BEST_PARAMS = {{
                     loc_range = dash_params['loc_range']
                     if n_split < 1: n_split = 1
                     
-                    # 1회 시드 (총 자산의 10%)
-                    one_time_seed = total_equity / 10
+                    # [수정] 1회 시드 계산 (비중표 적용)
+                    next_tier = len(current_holdings) + 1
+                    if next_tier > 10: next_tier = 10
+                    
+                    # 현재 모드(바닥/중간/천장)에 맞는 컬럼 이름 찾기
+                    if "바닥" in curr_phase: col_name = "Bottom"
+                    elif "천장" in curr_phase: col_name = "Ceiling"
+                    else: col_name = "Middle"
+                    
+                    # 비중 가져오기
+                    try:
+                        target_weight = dash_params['tier_weights'].loc[f'Tier {next_tier}', col_name]
+                    except:
+                        target_weight = 10.0
+                        
+                    one_time_seed = total_equity * (target_weight / 100.0)
                     
                     # 1. 구간별 시작 비율
                     if "바닥" in curr_phase: start_rate = dash_params['bt_buy']
@@ -989,3 +1003,4 @@ MY_BEST_PARAMS = {{
 else:
 
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
