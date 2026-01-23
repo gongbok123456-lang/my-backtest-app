@@ -373,56 +373,73 @@ def backtest_engine_web(df, params):
 # --- [UI 구성] ---
 st.title("📊 쪼꼬야옹 백테스트 연구소")
 
+# ==============================================================================
+# [사이드바 UI 설정]
+# ==============================================================================
 with st.sidebar:
-    st.header("⚙️ 기본 설정")
-    sheet_url = st.text_input("🔗 구글 시트 주소 (URL)", value=DEFAULT_SHEET_URL)
-    st.caption("※ 시트에 'Date', 'SOXL', 'QQQ' 데이터가 있어야 합니다.")
-    st.subheader("💰 자산 및 복리 설정")
-    balance = st.number_input("초기 자본 ($)", value=10000)
-    fee = st.number_input("수수료 (%)", value=0.07)
-    profit_rate = st.slider("이익 복리율 (%)", 0, 100, 70)
-    loss_rate = st.slider("손실 복리율 (%)", 0, 100, 50)
-    st.subheader("📥 LOC 설정")
-    add_order_cnt = st.number_input("추가 주문 횟수", value=4, min_value=1) 
-    loc_range = st.number_input("하단 범위 (-%)", value=20.0, min_value=0.0) 
-    st.subheader("📈 기간 설정")
+    st.header("⚙️ 설정 패널")
     
-    # 1. 오늘 날짜를 구합니다.
+    # 1. 날짜 설정
     today = datetime.date.today()
+    st.subheader("📅 기간 설정")
+    start_date = st.date_input("시작일", value=datetime.date(2010, 1, 1), max_value=today)
+    end_date = st.date_input("종료일", value=today, max_value=today)
     
-    # 2. 시작일 설정
-    # value: 기본값 (2010년 1월 1일로 설정 - 원하시는 대로 수정 가능)
-    # max_value: 오늘 이후로는 선택 못하게 막음 (미래 데이터는 없으니까요)
-    start_date = st.date_input(
-        "시작일", 
-        value=datetime.date(2010, 1, 1), 
-        max_value=today
-    )
-    
-    # 3. 종료일 설정
-    # value: 기본값을 'today'(오늘)로 설정 -> 매일 접속할 때마다 자동으로 바뀝니다.
-    # max_value: 오늘 이후 날짜 선택 방지
-    end_date = st.date_input(
-        "종료일", 
-        value=today, 
-        max_value=today
-    )
+    st.markdown("---")
 
-st.markdown("---")
+    # 2. 자산 및 기본 설정
+    st.subheader("💰 자산 및 수수료")
+    balance = st.number_input("초기 자본 ($)", value=20000, step=1000)
+    sheet_url = st.text_input("구글 시트 주소 (선택)", "")
+    fee = st.number_input("수수료 (%)", value=0.07, step=0.01, format="%.2f")
+    
+    st.markdown("---")
+
+    # 3. 전략 파라미터
+    st.subheader("📊 전략 파라미터")
+    ma_win = st.slider("이평선 기간 (일)", 10, 300, 200)
+    add_order_cnt = st.number_input("추가 주문 분할 수", value=4, step=1)
+    loc_range = st.number_input("LOC 범위 (%)", value=20.0, step=1.0)
+    
+    profit_rate = st.number_input("기본 익절 (%)", value=10.0)
+    loss_rate = st.number_input("손절 (%)", value=50.0)
+
+    st.markdown("---")
+
+    # 4. 구간별 설정 (바닥/천장/중간)
+    st.subheader("📉 바닥 (Bottom)")
+    bt_cond = st.number_input("이격도 기준 (이하)", value=-5.0)
+    bt_buy = st.number_input("매수 LOC (%)", value=-5.0, key='bb')
+    bt_prof = st.number_input("익절 (%)", value=10.0, key='bp')
+    bt_time = st.number_input("보유일수", value=20, key='bt')
+    
+    st.subheader("📈 천장 (Ceiling)")
+    cl_cond = st.number_input("이격도 기준 (이상)", value=10.0)
+    cl_buy = st.number_input("매수 LOC (%)", value=-1.0, key='cb')
+    cl_prof = st.number_input("익절 (%)", value=3.0, key='cp')
+    cl_time = st.number_input("보유일수", value=5, key='ct')
+    
+    st.subheader("➖ 중간 (Middle)")
+    md_buy = st.number_input("매수 LOC (%)", value=-3.0, key='mb')
+    md_prof = st.number_input("익절 (%)", value=5.0, key='mp')
+    md_time = st.number_input("보유일수", value=10, key='mt')
+
+    st.markdown("---")
+
+    # 5. [신규 기능] 티어별 비중 설정 (여기가 문제였던 부분)
     st.subheader("⚖️ 티어별 비중 설정 (%)")
-    st.caption("각 구간(모드)별로 티어 진입 비중을 다르게 설정합니다.")
+    st.caption("각 구간(모드)별로 티어 진입 비중을 설정합니다. (합계 100% 권장)")
 
-    # 1. 기본 비중 데이터프레임 생성 (기본값: 모두 10%)
+    # 기본값 생성 (모두 10%)
     default_data = {
         'Tier': [f'Tier {i}' for i in range(1, 11)],
-        'Bottom': [10.0] * 10,  # 바닥 모드 비중
-        'Middle': [10.0] * 10,  # 중간 모드 비중
-        'Ceiling': [10.0] * 10  # 천장 모드 비중
+        'Bottom': [10.0] * 10,
+        'Middle': [10.0] * 10,
+        'Ceiling': [10.0] * 10
     }
     df_weights_default = pd.DataFrame(default_data).set_index('Tier')
 
-    # 2. 데이터 에디터 출력 (사용자가 직접 수정 가능)
-    # num_rows="fixed": 행 개수 고정 (10개 티어)
+    # 데이터 에디터 (수정 가능)
     edited_weights = st.data_editor(
         df_weights_default,
         column_config={
@@ -430,16 +447,17 @@ st.markdown("---")
             "Middle": st.column_config.NumberColumn("중간(%)", min_value=0, max_value=100, format="%.1f%%"),
             "Ceiling": st.column_config.NumberColumn("천장(%)", min_value=0, max_value=100, format="%.1f%%"),
         },
-        use_container_width=True
+        use_container_width=True,
+        key='weight_editor'
     )
 
-    # 3. 합계 검증 (사용자 편의용)
+    # 합계 검증 알림
     sum_bot = edited_weights['Bottom'].sum()
     sum_mid = edited_weights['Middle'].sum()
     sum_ceil = edited_weights['Ceiling'].sum()
 
-    if sum_bot != 100 or sum_mid != 100 or sum_ceil != 100:
-        st.warning(f"⚠️ 비중 합계 주의: 바닥({sum_bot}%), 중간({sum_mid}%), 천장({sum_ceil}%)")
+    if not (math.isclose(sum_bot, 100, abs_tol=0.1) and math.isclose(sum_mid, 100, abs_tol=0.1) and math.isclose(sum_ceil, 100, abs_tol=0.1)):
+         st.warning(f"⚠️ 비중 합계가 100%가 아닙니다! (바닥:{sum_bot:.0f}%, 중간:{sum_mid:.0f}%, 천장:{sum_ceil:.0f}%)")
 
 if sheet_url:
     df = load_data_from_gsheet(sheet_url)
@@ -989,3 +1007,4 @@ MY_BEST_PARAMS = {{
 else:
 
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
