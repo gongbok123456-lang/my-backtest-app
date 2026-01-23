@@ -163,34 +163,50 @@ def calculate_loc_quantity(seed_amount, order_price, close_price, buy_range, max
 
 # --- [백테스트 엔진] ---
 def backtest_engine_web(df, params):
-    f = df.copy()
+    df = df.copy()
     
     # ------------------------------------------------------------------
-    # [디버깅 모드] 구글 시트 비교용 데이터 생성
+    # [정밀 진단 모드] 3가지 이평선 동시 계산
     # ------------------------------------------------------------------
     
-    # 1. 주봉(Weekly) 변환
+    ma_win = int(params['ma_window']) # 기본 200
+    
+    # 1. 일봉 기준 SMA 200 (단순)
+    df['MA_SMA_200'] = df['QQQ'].rolling(window=ma_win, min_periods=1).mean()
+    
+    # 2. 일봉 기준 EMA 200 (지수) - 구글시트가 이거일 확률 높음!
+    df['MA_EMA_200'] = df['QQQ'].ewm(span=ma_win, adjust=False).mean()
+    
+    # 3. 주봉 기준 SMA 40 (기존 코드)
     df_weekly = df['QQQ'].resample('W-FRI').last().to_frame()
+    weekly_win = ma_win // 5
+    if weekly_win < 1: weekly_win = 1
+    df_weekly['MA_Weekly_40'] = df_weekly['QQQ'].rolling(window=weekly_win, min_periods=1).mean()
     
-    # 2. MA 계산 (200일 -> 40주 로직 적용)
-    ma_daily_param = int(params['ma_window'])
-    ma_weekly_win = ma_daily_param // 5  # 200 // 5 = 40
-    if ma_weekly_win < 1: ma_weekly_win = 1
+    # ------------------------------------------------------------------
+    # [전략 적용] 어떤 이평선을 기준으로 모드를 나눌 것인가?
+    # 일단 'SMA 200'을 기준으로 하되, 로그에서 비교해보고 나중에 바꿀 수 있습니다.
+    # ------------------------------------------------------------------
     
-    df_weekly['MA_Weekly'] = df_weekly['QQQ'].rolling(window=ma_weekly_win, min_periods=1).mean()
+    # 이격도 계산 (일봉 SMA 200 기준)
+    df['Disp_Main'] = (df['QQQ'] / df['MA_SMA_200'] - 1) * 100
     
-    # 3. 이격도 계산 (%)
-    df_weekly['Weekly_Disp_Pct'] = (df_weekly['QQQ'] / df_weekly['MA_Weekly'] - 1) * 100
+    # 주간 모드 고정 (금요일 값 -> 다음주 적용)
+    # (실전 매매와 동일하게, 금요일 확정 이격도를 다음주 내내 사용)
+    weekly_disp = df['Disp_Main'].resample('W-FRI').last()
+    df['Basis_Disp'] = weekly_disp.reindex(df.index, method='ffill').shift(1).fillna(0)
+
+    # ------------------------------------------------------------------
+    # [로그용 데이터 준비] (전일 기준, 즉 '판단에 사용된' 값들)
+    # ------------------------------------------------------------------
     
-    # 4. 일봉으로 확장 (ffill) & 전일 기준(shift 1) 적용
-    # '오늘' 매매할 때는 '지난주 금요일'에 확정된 값을 봅니다.
-    # 로그에 남길 값들도 똑같이 처리해서 df에 넣어둡니다.
-    
+    # 주봉 데이터(가격, MA40)를 일봉으로 확장 (shift 1 적용)
     df_weekly_expanded = df_weekly.reindex(df.index, method='ffill').shift(1)
     
-    df['Basis_Disp'] = df_weekly_expanded['Weekly_Disp_Pct'].fillna(0)
-    df['Log_QQQ_W'] = df_weekly_expanded['QQQ']       # 로그용: 주봉 종가
-    df['Log_MA_W']  = df_weekly_expanded['MA_Weekly'] # 로그용: 주봉 MA값
+    df['Log_QQQ_Price'] = df_weekly_expanded['QQQ']       # 금요일 종가
+    df['Log_MA_SMA']    = df['MA_SMA_200'].shift(1)       # 전일 SMA 200
+    df['Log_MA_EMA']    = df['MA_EMA_200'].shift(1)       # 전일 EMA 200
+    df['Log_MA_W40']    = df_weekly_expanded['MA_Weekly_40'] # 금요일 MA 40
 
     # ------------------------------------------------------------------
 
@@ -280,7 +296,7 @@ def backtest_engine_web(df, params):
                 trade_count += 1
                 if real_profit > 0: win_count += 1
                 trade_log.append({
-                    'Date': dates[i], 'Type': 'Sell', 'Tier': tier, 'Phase': mode, 'QQQ_W': row['Log_QQQ_W'], 'MA_W': row['Log_MA_W'], 'Disp': disp,
+                    'Date': dates[i], 'Type': 'Sell', 'Tier': tier, 'Phase': mode, 'QQQ_Val': row['Log_QQQ_Price'], 'MA_SMA': row['Log_MA_SMA'], 'MA_EMA': row['Log_MA_EMA'], 'MA_W40': row['Log_MA_W40'], 'Disp': disp,
                     'Price': today_close, 'Qty': qty, 'Profit': real_profit, 'Reason': reason
                 })
             else:
@@ -344,7 +360,8 @@ def backtest_engine_web(df, params):
                         cash -= buy_amt
                         holdings.append([today_close, 0, real_qty, phase, new_tier, dates[i]])
                         trade_log.append({
-                            'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase, 'QQQ_W': row['Log_QQQ_W'], 'MA_W': row['Log_MA_W'], 'Disp': disp, 
+                            'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase, 'QQQ_Val': row['Log_QQQ_Price'], 'MA_SMA': row['Log_MA_SMA'], 'MA_EMA': row['Log_MA_EMA'], 'MA_W40': row['Log_MA_W40'], 
+							'Disp': disp, 
                             'Price': today_close, 'Qty': real_qty, 'Profit': 0, 'Reason': 'LOC'
                         })
         
@@ -1024,6 +1041,7 @@ MY_BEST_PARAMS = {{
 else:
 
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
 
 
 
