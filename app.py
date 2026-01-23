@@ -166,46 +166,45 @@ def backtest_engine_web(df, params):
     df = df.copy()
     
     # ------------------------------------------------------------------
-    # [엑셀 수식 로직 구현] =FILTER(Daily_MA, Daily_Date = Friday_Date)
+    # [최종 수정] 거래일 기준 MA 계산 -> 주봉 날짜 매핑
     # ------------------------------------------------------------------
     
-    # 1. 데이터 정제 (날짜 흐름 끊김 방지)
+    # 1. [정렬] 날짜순 정렬 (중복 제거)
     df = df.sort_index()
-    # 주말/공휴일 등 비어있는 날짜의 QQQ 값을 전일 종가로 채워줍니다.
-    # (이동평균 계산 시 데이터 개수가 엑셀과 달라지는 것을 방지)
-    df_daily = df.asfreq('D').fillna(method='ffill')
+    df = df[~df.index.duplicated(keep='last')]
     
-    # 2. Daily MA 200 계산 (P열 만들기)
-    # 엑셀의 P열(Daily MA 200)을 생성합니다.
-    ma_win = int(params['ma_window'])
-    df_daily['MA_Daily'] = df_daily['QQQ'].rolling(window=ma_win, min_periods=1).mean()
+    # 2. [MA 계산] "거래일(Trading Day) 기준" 200일선 계산
+    # (절대로 asfreq('D')를 먼저 하면 안 됩니다! 구글 시트 P열 로직)
+    ma_win = int(params['ma_window']) # 200
     
-    # 3. 금요일 날짜 찾기 (AE열 만들기)
-    # 매주 금요일의 날짜에 해당하는 행만 필터링합니다.
-    # (엑셀의 FILTER 함수 역할)
-    df_weekly_snapshot = df_daily[df_daily.index.dayofweek == 4].copy() # 4 = Friday
+    # SMA (단순)
+    df['MA_SMA'] = df['QQQ'].rolling(window=ma_win, min_periods=1).mean()
+    # EMA (지수) - 구글 시트 비교용
+    df['MA_EMA'] = df['QQQ'].ewm(span=ma_win, adjust=False).mean()
     
-    # 4. 금요일의 값 추출 (값 가져오기)
-    # 금요일의 QQQ 종가와 MA 값을 가져옵니다.
-    df_weekly_snapshot = df_weekly_snapshot[['QQQ', 'MA_Daily']]
-    df_weekly_snapshot.columns = ['QQQ_Fri', 'MA_Fri']
+    # 3. [주봉 날짜 추출] 매주 금요일(또는 그 주 마지막 거래일) 찾기
+    # resample('W-FRI').last()를 쓰면 "그 주에 존재하는 마지막 데이터"를 가져옵니다.
+    # 즉, QQQ 종가와 그 날의 MA값이 세트로 묶여 나옵니다.
+    weekly_data = df[['QQQ', 'MA_SMA', 'MA_EMA']].resample('W-FRI').last()
     
-    # 5. 이격도 계산 (금요일 기준)
-    df_weekly_snapshot['Disp_Fri'] = (df_weekly_snapshot['QQQ_Fri'] / df_weekly_snapshot['MA_Fri'] - 1) * 100
+    weekly_data.columns = ['QQQ_Fri', 'SMA_Fri', 'EMA_Fri']
     
-    # 6. 다음주 적용 (매핑)
-    # 금요일에 확정된 값을 다시 전체 일봉(df)에 뿌려줍니다.
-    # shift(1)을 해야 "지난주 금요일 값"을 "이번주 월요일"부터 봅니다. (미래 참조 방지)
+    # 4. [이격도 계산] 금요일 기준 (일단 SMA 기준으로 계산)
+    weekly_data['Disp_Fri'] = (weekly_data['QQQ_Fri'] / weekly_data['SMA_Fri'] - 1) * 100
     
-    # reindex로 일별 데이터로 확장 -> ffill로 다음 금요일까지 값 유지 -> shift(1)로 하루 뒤로 밀기
-    df_expanded = df_weekly_snapshot.reindex(df.index, method='ffill').shift(1)
+    # 5. [전체 확장] 금요일 데이터를 다음주(월~금) 내내 적용
+    # shift(1) : 금요일 확정된 값을 -> 다음주 월요일부터 참조
+    weekly_expanded = weekly_data.reindex(df.index, method='ffill').shift(1)
     
-    df['Basis_Disp'] = df_expanded['Disp_Fri'].fillna(0)
+    # 데이터프레임에 매핑
+    df['Basis_Disp'] = weekly_expanded['Disp_Fri'].fillna(0)
     
-    # [로그 확인용 데이터]
-    df['Log_Ref_Date'] = df_weekly_snapshot.index.to_series().reindex(df.index, method='ffill').shift(1)
-    df['Log_QQQ_Fri']  = df_expanded['QQQ_Fri']
-    df['Log_MA_Fri']   = df_expanded['MA_Fri']
+    # [로그용 데이터]
+    # 기준일(Ref_Date)도 함께 남겨서 "언제 데이터인지" 확인
+    df['Log_Ref_Date'] = weekly_data.index.to_series().reindex(df.index, method='ffill').shift(1)
+    df['Log_QQQ_Fri']  = weekly_expanded['QQQ_Fri']
+    df['Log_SMA_Fri']  = weekly_expanded['SMA_Fri'] # 이게 558.5 근처여야 함!
+    df['Log_EMA_Fri']  = weekly_expanded['EMA_Fri']
 
     # ------------------------------------------------------------------
 
@@ -1044,6 +1043,7 @@ MY_BEST_PARAMS = {{
 else:
 
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
 
 
 
