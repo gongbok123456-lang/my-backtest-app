@@ -104,7 +104,7 @@ def load_data_from_gsheet(url):
         df_soxl = extract_series(rows, idx_soxl, 'SOXL')
 
         # 4. 날짜 기준 병합 (Inner Join: 둘 다 데이터가 있는 날만)
-        df_merged = pd.merge(df_qqq, df_soxl, on='Date', how='inner')
+        df_merged = pd.merge(df_qqq, df_soxl, on='Date', how='left')
         
         df_merged.set_index('Date', inplace=True)
         df_merged.sort_index(inplace=True)
@@ -228,7 +228,10 @@ def backtest_engine_web(df, params):
     
     df = df.sort_index()
     df = df[(df.index >= start_dt) & (df.index <= end_dt + pd.Timedelta(days=1))].copy()
-    
+
+    # ★ [추가할 코드] 실제 매매는 SOXL이 있어야 하므로, 계산 끝난 후 여기서 제거
+    df = df.dropna(subset=['SOXL'])  
+
     if len(df) == 0: return None
 
     dates = df.index
@@ -1062,6 +1065,7 @@ MY_BEST_PARAMS = {{
 else:
 
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
 
 
 
