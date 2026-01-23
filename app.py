@@ -165,94 +165,63 @@ def calculate_loc_quantity(seed_amount, order_price, close_price, buy_range, max
 def backtest_engine_web(df, params):
     df = df.copy()
     
-    # [진단 모드] 데이터 정합성 체크
-    df = df.sort_index(ascending=True)
-    df = df[~df.index.duplicated(keep='last')]
-    df['QQQ'] = df['QQQ'].fillna(method='ffill')
-
-    # MA 계산 (거래일 기준 200 단순이평)
-    ma_win = int(params['ma_window'])
-    df['MA_Daily'] = df['QQQ'].rolling(window=ma_win, min_periods=ma_win).mean().round(2)
-    
-    # -------------------------------------------------------------
-    # [범인 색출] 200일 전 가격과 현재 가격 기록
-    # -------------------------------------------------------------
-    # 200일 전(Start)과 오늘(End)의 가격을 알면 데이터 밀림을 알 수 있습니다.
-    # shift(ma_win - 1) : 199일 전 데이터 가져오기
-    
-    df['Debug_Start_Price'] = df['QQQ'].shift(ma_win - 1) # 집계 시작일의 가격
-    df['Debug_End_Price']   = df['QQQ']                   # 집계 종료일(오늘)의 가격
-    
-    # 금요일 스냅샷
-    cols = ['QQQ', 'MA_Daily', 'Debug_Start_Price']
-    weekly_data = df[cols].resample('W-FRI').last()
-    weekly_data.columns = ['QQQ_Fri', 'MA_Fri', 'Start_Price_Fri']
-    
-    # 이격도 및 확장
-    weekly_data['Disp_Fri'] = (weekly_data['QQQ_Fri'] / weekly_data['MA_Fri'] - 1) * 100
-    weekly_expanded = weekly_data.reindex(df.index, method='ffill').shift(1)
-    
-    df['Basis_Disp'] = weekly_expanded['Disp_Fri'].fillna(0)
-    
-    # 로그용 매핑
-    df['Log_Ref_Date']      = weekly_data.index.to_series().reindex(df.index, method='ffill').shift(1)
-    df['Log_QQQ_Fri']       = weekly_expanded['QQQ_Fri']
-    df['Log_MA_Fri']        = weekly_expanded['MA_Fri']
-    df['Log_Start_Price']   = weekly_expanded['Start_Price_Fri'] # 200일 전 가격
-    
     # ------------------------------------------------------------------
-    # [최종 정밀 동기화] 구글 시트 수식 파이썬 구현
-    # 수식: ROUND(AVERAGE(OFFSET(..., -199, 0, 200, 1)), 2)
-    # 원리: 날짜 오름차순 정렬 상태에서 '직전 200개 행'의 단순 평균을 소수점 2자리로 반올림
+    # [최종 수정] "있는 그대로" 순서 존중 (Raw Order)
+    # 구글 시트의 행 순서와 100% 일치시키기 위해 정렬/제거를 하지 않습니다.
     # ------------------------------------------------------------------
     
-    # 1. [필수] 날짜 기준 오름차순 정렬 (과거 -> 미래)
-    # 엑셀은 보통 위에서 아래로 날짜가 흐르므로, 파이썬도 순서를 맞춰야 OFFSET 로직이 성립합니다.
-    df = df.sort_index(ascending=True)
+    # 1. [중요] 정렬 및 중복 제거 코드 삭제!
+    # df = df.sort_index()  <-- (삭제) 구글 시트 순서 그대로 믿음
+    # df = df[~df.index.duplicated()] <-- (삭제) 중복 있어도 엑셀처럼 포함해서 계산
     
-    # 2. [데이터 정제] 중복 제거 및 빈 값 처리
-    # 같은 날짜가 2개 있으면 200개가 밀리므로 제거
-    df = df[~df.index.duplicated(keep='last')]
+    # 혹시 QQQ가 숫자가 아니라면 변환 (안전장치)
+    df['QQQ'] = pd.to_numeric(df['QQQ'], errors='coerce')
     
-    # QQQ 값이 비어있으면(NaN) 계산이 안 되므로, 전일 값으로 채우거나(ffill) 그대로 둡니다.
-    # 엑셀 AVERAGE는 빈 칸을 무시하지만, rolling은 NaN이 있으면 결과도 NaN일 수 있습니다.
-    # 데이터 연속성을 위해 채워줍니다.
-    df['QQQ'] = df['QQQ'].fillna(method='ffill')
-    
-    # 3. [MA 계산] 엑셀 수식 1:1 대응
-    # window=200 : OFFSET(..., 200, ...)
-    # mean()     : AVERAGE(...)
-    # round(2)   : ROUND(..., 2)
-    
+    # 2. 거래일 기준 200 단순이평 (SMA) -> 반올림
     ma_win = int(params['ma_window']) # 200
-    df['MA_Daily'] = df['QQQ'].rolling(window=ma_win, min_periods=ma_win).mean().round(2)
     
-    # 참고: min_periods=ma_win으로 설정하면, 데이터가 200개 쌓이기 전(앞부분)은 NaN으로 나옵니다.
-    # (엑셀의 IF(Row < MA, "", ...) 로직과 동일)
+    # 데이터 순서대로 200개씩 묶어서 평균
+    df['MA_Daily'] = df['QQQ'].rolling(window=ma_win, min_periods=1).mean().round(2)
     
-    # ------------------------------------------------------------------
-    # [전략 적용] 금요일(주봉) 기준 모드 판단 (VR 전략)
-    # ------------------------------------------------------------------
+    # 3. 금요일 스냅샷 추출
+    # 여기서도 날짜 인덱스에 의존하기보다, '요일' 정보를 새로 뽑아서 필터링합니다.
+    # (인덱스가 중복되거나 정렬 안 되어 있을 수도 있으므로)
     
-    # 1. 금요일 스냅샷 추출 (QQQ 종가, 계산된 MA 값)
-    # 구글 시트는 "금요일 날짜 행"에 적힌 MA 값을 가져갑니다.
-    weekly_data = df[['QQQ', 'MA_Daily']].resample('W-FRI').last()
+    # 요일 컬럼 생성 (0=월, 4=금)
+    df['Weekday'] = df.index.dayofweek
+    
+    # "금요일인 행"만 추출 (휴장일 처리 로직은 load_data에 맡김 or 단순 금요일 추출)
+    # 구글 시트 수식(FILTER)과 동일하게 "금요일 날짜"를 가진 행을 가져옵니다.
+    weekly_data = df[df['Weekday'] == 4].copy()
+    
+    # 필요한 값만 남기기
+    weekly_data = weekly_data[['QQQ', 'MA_Daily']]
     weekly_data.columns = ['QQQ_Fri', 'MA_Fri']
     
-    # 2. 이격도 계산 (금요일 기준)
+    # 4. 이격도 계산
     weekly_data['Disp_Fri'] = (weekly_data['QQQ_Fri'] / weekly_data['MA_Fri'] - 1) * 100
     
-    # 3. 다음주 적용 (Shift 1)
-    # 금요일에 확정된 값을 -> 다음주 월요일부터 사용
-    weekly_expanded = weekly_data.reindex(df.index, method='ffill').shift(1)
+    # 5. 전체 확장 (Shift 1)
+    # 다시 전체 df의 인덱스에 맞춰서 늘려줍니다.
+    # (주의: sort_index를 안 했으므로, reindex 시 문제가 될 수 있어 여기서만 잠깐 정렬해서 매핑)
     
-    # 4. 최종 데이터 매핑
-    df['Basis_Disp'] = weekly_expanded['Disp_Fri'].fillna(0)
+    # 매핑을 위해 잠시 정렬된 인덱스 사용
+    df_sorted = df.sort_index()
+    weekly_data_sorted = weekly_data.sort_index()
     
-    # [로그 확인용]
-    df['Log_Ref_Date'] = weekly_data.index.to_series().reindex(df.index, method='ffill').shift(1)
+    # 금요일 값을 다음주로 확장
+    weekly_expanded = weekly_data_sorted.reindex(df_sorted.index, method='ffill').shift(1)
+    
+    # 원래 df 순서에 맞춰서 값 넣기 (인덱스 기준 매핑)
+    df['Basis_Disp'] = weekly_expanded['Disp_Fri']
+    
+    # [로그용]
+    df['Log_Ref_Date'] = weekly_data_sorted.index.to_series().reindex(df_sorted.index, method='ffill').shift(1)
     df['Log_QQQ_Fri']  = weekly_expanded['QQQ_Fri']
     df['Log_MA_Fri']   = weekly_expanded['MA_Fri']
+    
+    # 빈 곳 채우기 (앞부분 등)
+    df['Basis_Disp'] = df['Basis_Disp'].fillna(0)
 
     # ------------------------------------------------------------------
 
@@ -260,6 +229,9 @@ def backtest_engine_web(df, params):
     
     start_dt = pd.to_datetime(params['start_date'])
     end_dt = pd.to_datetime(params['end_date'])
+    
+    # 마지막 필터링 때는 날짜 기준이 필요하므로 정렬해서 자름
+    df = df.sort_index()
     df = df[(df.index >= start_dt) & (df.index <= end_dt + pd.Timedelta(days=1))].copy()
     
     if len(df) == 0: return None
@@ -1095,6 +1067,7 @@ MY_BEST_PARAMS = {{
 else:
 
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
 
 
 
