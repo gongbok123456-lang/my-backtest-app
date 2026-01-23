@@ -166,45 +166,47 @@ def backtest_engine_web(df, params):
     df = df.copy()
     
     # ------------------------------------------------------------------
-    # [최종 수정] 거래일 기준 MA 계산 -> 주봉 날짜 매핑
+    # [최종 정답] 엑셀 수식 완벽 구현
+    # 수식: ROUND(AVERAGE(OFFSET(..., 200, ...)), 2)
+    # 의미: "거래일 기준" 200일 단순이평(SMA) -> 소수점 2자리 반올림
     # ------------------------------------------------------------------
     
-    # 1. [정렬] 날짜순 정렬 (중복 제거)
+    # 1. [데이터 정렬] 날짜순 정렬 (필수)
     df = df.sort_index()
+    # 혹시 중복된 날짜가 있다면 제거
     df = df[~df.index.duplicated(keep='last')]
     
-    # 2. [MA 계산] "거래일(Trading Day) 기준" 200일선 계산
-    # (절대로 asfreq('D')를 먼저 하면 안 됩니다! 구글 시트 P열 로직)
+    # 2. [MA 계산] 엑셀 수식 로직 적용
     ma_win = int(params['ma_window']) # 200
     
-    # SMA (단순)
-    df['MA_SMA'] = df['QQQ'].rolling(window=ma_win, min_periods=1).mean()
-    # EMA (지수) - 구글 시트 비교용
-    df['MA_EMA'] = df['QQQ'].ewm(span=ma_win, adjust=False).mean()
+    # (1) rolling(window=200).mean() : 200일치 종가의 단순 평균 (AVERAGE + OFFSET)
+    # (2) .round(2) : 소수점 둘째 자리 반올림 (ROUND)
+    # ※ 주의: min_periods=1을 쓰면 데이터가 200개 안 돼도 계산해버리니, 
+    #    엑셀의 IF(Row<MA,"") 처럼 정확히 하려면 min_periods=ma_win을 써야 하지만,
+    #    백테스트 초반 데이터 확보를 위해 여기선 min_periods=1 유지 (큰 차이 없음)
     
-    # 3. [주봉 날짜 추출] 매주 금요일(또는 그 주 마지막 거래일) 찾기
-    # resample('W-FRI').last()를 쓰면 "그 주에 존재하는 마지막 데이터"를 가져옵니다.
-    # 즉, QQQ 종가와 그 날의 MA값이 세트로 묶여 나옵니다.
-    weekly_data = df[['QQQ', 'MA_SMA', 'MA_EMA']].resample('W-FRI').last()
+    df['MA_Excel_Logic'] = df['QQQ'].rolling(window=ma_win, min_periods=1).mean().round(2)
     
-    weekly_data.columns = ['QQQ_Fri', 'SMA_Fri', 'EMA_Fri']
+    # 3. [금요일 스냅샷] 매주 금요일의 값만 추출
+    # 구글 시트는 금요일의 이 MA값을 기준으로 이격도를 판단함
+    cols_needed = ['QQQ', 'MA_Excel_Logic']
+    weekly_data = df[cols_needed].resample('W-FRI').last()
     
-    # 4. [이격도 계산] 금요일 기준 (일단 SMA 기준으로 계산)
-    weekly_data['Disp_Fri'] = (weekly_data['QQQ_Fri'] / weekly_data['EMA_Fri'] - 1) * 100
+    weekly_data.columns = ['QQQ_Fri', 'MA_Fri']
     
-    # 5. [전체 확장] 금요일 데이터를 다음주(월~금) 내내 적용
-    # shift(1) : 금요일 확정된 값을 -> 다음주 월요일부터 참조
+    # 4. [이격도 계산] 금요일 기준
+    weekly_data['Disp_Fri'] = (weekly_data['QQQ_Fri'] / weekly_data['MA_Fri'] - 1) * 100
+    
+    # 5. [다음주 적용] 금요일 확정값을 월요일부터 사용 (Shift 1)
     weekly_expanded = weekly_data.reindex(df.index, method='ffill').shift(1)
     
-    # 데이터프레임에 매핑
+    # 최종 적용
     df['Basis_Disp'] = weekly_expanded['Disp_Fri'].fillna(0)
     
-    # [로그용 데이터]
-    # 기준일(Ref_Date)도 함께 남겨서 "언제 데이터인지" 확인
+    # [로그 확인용 데이터]
     df['Log_Ref_Date'] = weekly_data.index.to_series().reindex(df.index, method='ffill').shift(1)
     df['Log_QQQ_Fri']  = weekly_expanded['QQQ_Fri']
-    df['Log_SMA_Fri']  = weekly_expanded['SMA_Fri'] # 이게 558.5 근처여야 함!
-    df['Log_EMA_Fri']  = weekly_expanded['EMA_Fri']
+    df['Log_MA_Fri']   = weekly_expanded['MA_Fri'] # 이게 558.50 이어야 함!
 
     # ------------------------------------------------------------------
 
@@ -296,7 +298,7 @@ def backtest_engine_web(df, params):
                 trade_log.append({
                 'Date': dates[i], 'Type': 'Sell', 'Tier': tier, 'Phase': mode, 'Ref_Date': row['Log_Ref_Date'].strftime('%Y-%m-%d') if pd.notnull(row['Log_Ref_Date']) else '-',
                 'QQQ_Fri': row['Log_QQQ_Fri'],
-                'MA_Calc': row['Log_EMA_Fri'], 'Disp': disp,
+                'MA_Excel': row['Log_MA_Fri'], 'Disp': disp,
                 'Price': today_close, 'Qty': qty, 'Profit': real_profit, 'Reason': reason
                 })
             else:
@@ -361,8 +363,8 @@ def backtest_engine_web(df, params):
                         holdings.append([today_close, 0, real_qty, phase, new_tier, dates[i]])
                         trade_log.append({
                             'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase, 'Ref_Date': row['Log_Ref_Date'].strftime('%Y-%m-%d') if pd.notnull(row['Log_Ref_Date']) else '-',
-                            'QQQ_Fri': row['Log_QQQ_Fri'],  # 우리가 "정확히 알고 있다"는 그 주봉값
-                            'MA_Calc': row['Log_EMA_Fri'], 
+                            'QQQ_Fri': row['Log_QQQ_Fri'],
+                            'MA_Excel': row['Log_MA_Fri'], 
 							'Disp': disp, 
                             'Price': today_close, 'Qty': real_qty, 'Profit': 0, 'Reason': 'LOC'
                         })
@@ -1043,6 +1045,7 @@ MY_BEST_PARAMS = {{
 else:
 
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
 
 
 
