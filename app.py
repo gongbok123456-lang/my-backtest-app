@@ -166,40 +166,46 @@ def backtest_engine_web(df, params):
     df = df.copy()
     
     # ------------------------------------------------------------------
-    # [최종 동기화] 구글 시트 로직 완벽 복제
-    # 로직: "매일 200일선을 계산한 뒤, 금요일의 그 값만 가져와서 다음주에 쓴다."
+    # [엑셀 수식 로직 구현] =FILTER(Daily_MA, Daily_Date = Friday_Date)
     # ------------------------------------------------------------------
     
-    ma_win = int(params['ma_window']) # 200
+    # 1. 데이터 정제 (날짜 흐름 끊김 방지)
+    df = df.sort_index()
+    # 주말/공휴일 등 비어있는 날짜의 QQQ 값을 전일 종가로 채워줍니다.
+    # (이동평균 계산 시 데이터 개수가 엑셀과 달라지는 것을 방지)
+    df_daily = df.asfreq('D').fillna(method='ffill')
     
-    # 1. [Daily] 일봉 기준으로 200일 단순이동평균(SMA) 계산
-    # (구글 시트 P열을 그대로 재현)
-    df['MA_Daily_SMA'] = df['QQQ'].rolling(window=ma_win, min_periods=1).mean()
+    # 2. Daily MA 200 계산 (P열 만들기)
+    # 엑셀의 P열(Daily MA 200)을 생성합니다.
+    ma_win = int(params['ma_window'])
+    df_daily['MA_Daily'] = df_daily['QQQ'].rolling(window=ma_win, min_periods=1).mean()
     
-    # 2. [Snapshot] 매주 금요일의 데이터만 추출 (Close & MA)
-    # resample('W-FRI').last()는 그 주의 마지막(금요일) 값을 가져옵니다.
-    # 즉, 금요일의 QQQ 종가와, 금요일 당시에 계산된 MA값을 가져옵니다.
-    weekly_data = df[['QQQ', 'MA_Daily_SMA']].resample('W-FRI').last()
+    # 3. 금요일 날짜 찾기 (AE열 만들기)
+    # 매주 금요일의 날짜에 해당하는 행만 필터링합니다.
+    # (엑셀의 FILTER 함수 역할)
+    df_weekly_snapshot = df_daily[df_daily.index.dayofweek == 4].copy() # 4 = Friday
     
-    # 컬럼 이름 변경 (헷갈리지 않게)
-    weekly_data.columns = ['QQQ_Fri', 'MA_Fri']
+    # 4. 금요일의 값 추출 (값 가져오기)
+    # 금요일의 QQQ 종가와 MA 값을 가져옵니다.
+    df_weekly_snapshot = df_weekly_snapshot[['QQQ', 'MA_Daily']]
+    df_weekly_snapshot.columns = ['QQQ_Fri', 'MA_Fri']
     
-    # 3. [Calculate] 금요일 기준 이격도 계산
-    # 구글 시트 수식: (AE열 종가 / P열 MA - 1) * 100
-    weekly_data['Disp_Fri'] = (weekly_data['QQQ_Fri'] / weekly_data['MA_Fri'] - 1) * 100
+    # 5. 이격도 계산 (금요일 기준)
+    df_weekly_snapshot['Disp_Fri'] = (df_weekly_snapshot['QQQ_Fri'] / df_weekly_snapshot['MA_Fri'] - 1) * 100
     
-    # 4. [Apply] 금요일 데이터를 '다음주 월~금'으로 확장 (Shift & Forward Fill)
-    # shift(1)을 해야 "1월 9일(금) 데이터"가 "1월 12일(월)"부터 적용됨 (미래 참조 방지)
+    # 6. 다음주 적용 (매핑)
+    # 금요일에 확정된 값을 다시 전체 일봉(df)에 뿌려줍니다.
+    # shift(1)을 해야 "지난주 금요일 값"을 "이번주 월요일"부터 봅니다. (미래 참조 방지)
     
-    weekly_expanded = weekly_data.reindex(df.index, method='ffill').shift(1)
+    # reindex로 일별 데이터로 확장 -> ffill로 다음 금요일까지 값 유지 -> shift(1)로 하루 뒤로 밀기
+    df_expanded = df_weekly_snapshot.reindex(df.index, method='ffill').shift(1)
     
-    # 데이터프레임에 매핑
-    df['Basis_Disp'] = weekly_expanded['Disp_Fri'].fillna(0) # 모드 판단용 이격도
+    df['Basis_Disp'] = df_expanded['Disp_Fri'].fillna(0)
     
-    # 로그 확인용 (사용자님이 비교하기 편하게)
-    df['Log_Ref_Date'] = weekly_data.index.to_series().reindex(df.index, method='ffill').shift(1) # 기준일(지난주 금요일)
-    df['Log_QQQ_Fri']  = weekly_expanded['QQQ_Fri']        # 기준일 QQQ 종가
-    df['Log_MA_Fri']   = weekly_expanded['MA_Fri']         # 기준일 MA 값
+    # [로그 확인용 데이터]
+    df['Log_Ref_Date'] = df_weekly_snapshot.index.to_series().reindex(df.index, method='ffill').shift(1)
+    df['Log_QQQ_Fri']  = df_expanded['QQQ_Fri']
+    df['Log_MA_Fri']   = df_expanded['MA_Fri']
 
     # ------------------------------------------------------------------
 
@@ -290,8 +296,8 @@ def backtest_engine_web(df, params):
                 if real_profit > 0: win_count += 1
                 trade_log.append({
                 'Date': dates[i], 'Type': 'Sell', 'Tier': tier, 'Phase': mode, 'Ref_Date': row['Log_Ref_Date'].strftime('%Y-%m-%d') if pd.notnull(row['Log_Ref_Date']) else '-',
-                'QQQ_W': row['Log_QQQ_Fri'],
-                'MA_200': row['Log_MA_Fri'], 'Disp': disp,
+                'QQQ_Fri': row['Log_QQQ_Fri'],
+                'MA_Calc': row['Log_MA_Fri'], 'Disp': disp,
                 'Price': today_close, 'Qty': qty, 'Profit': real_profit, 'Reason': reason
                 })
             else:
@@ -356,8 +362,8 @@ def backtest_engine_web(df, params):
                         holdings.append([today_close, 0, real_qty, phase, new_tier, dates[i]])
                         trade_log.append({
                             'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase, 'Ref_Date': row['Log_Ref_Date'].strftime('%Y-%m-%d') if pd.notnull(row['Log_Ref_Date']) else '-',
-                            'QQQ_W': row['Log_QQQ_Fri'],
-                            'MA_200': row['Log_MA_Fri'], 
+                            'QQQ_Fri': row['Log_QQQ_Fri'],  # 우리가 "정확히 알고 있다"는 그 주봉값
+                            'MA_Calc': row['Log_MA_Fri'], 
 							'Disp': disp, 
                             'Price': today_close, 'Qty': real_qty, 'Profit': 0, 'Reason': 'LOC'
                         })
@@ -1038,6 +1044,7 @@ MY_BEST_PARAMS = {{
 else:
 
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
 
 
 
