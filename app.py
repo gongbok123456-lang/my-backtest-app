@@ -259,7 +259,7 @@ def backtest_engine_web(df, params):
                 trade_count += 1
                 if real_profit > 0: win_count += 1
                 trade_log.append({
-                    'Date': dates[i], 'Type': 'Sell', 'Tier': tier, 'Phase': mode,
+                    'Date': dates[i], 'Type': 'Sell', 'Tier': tier, 'Phase': mode, 'Disp': disp,
                     'Price': today_close, 'Qty': qty, 'Profit': real_profit, 'Reason': reason
                 })
             else:
@@ -323,7 +323,7 @@ def backtest_engine_web(df, params):
                         cash -= buy_amt
                         holdings.append([today_close, 0, real_qty, phase, new_tier, dates[i]])
                         trade_log.append({
-                            'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase,
+                            'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase, 'Disp': disp, 
                             'Price': today_close, 'Qty': real_qty, 'Profit': 0, 'Reason': 'LOC'
                         })
         
@@ -1003,4 +1003,5 @@ MY_BEST_PARAMS = {{
 else:
 
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
 
