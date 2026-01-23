@@ -227,8 +227,8 @@ def backtest_engine_web(df, params):
         else: phase = 'Middle'
 
         conf = strategy[phase]
-        # target_seed_float = seed_equity / MAX_SLOTS
-        # target_seed = int(target_seed_float + 0.5)
+        target_seed_float = seed_equity / MAX_SLOTS
+        target_seed = int(target_seed_float + 0.5)
 
         tiers_sold = set()
         daily_net_profit_sum = 0
@@ -269,63 +269,42 @@ def backtest_engine_web(df, params):
             rate = params['profit_rate'] if daily_net_profit_sum > 0 else params['loss_rate']
             seed_equity += daily_net_profit_sum * rate
             
-        # [수정된 매수 로직 시작] ==============================================
         prev_c = row['Prev_Close'] if not pd.isna(row['Prev_Close']) else today_close
         if pd.isna(prev_c): prev_c = today_close
             
         target_p = excel_round_down(prev_c * (1 + conf['buy'] / 100), 2)
-        
-        # 1. 들어갈 티어(New Tier)를 먼저 계산 (비중을 알기 위해 필수)
-        curr_tiers = {h[4] for h in holdings}
-        unavail = curr_tiers.union(tiers_sold)
-        new_tier = 1
-        while new_tier in unavail: new_tier += 1
-        
-        # 2. 해당 티어의 비중(%)을 가져와서 시드(bet) 계산
-        # params에 'tier_weights' 표가 있으면 그걸 쓰고, 없으면 1/10 적용
-        if 'tier_weights' in params and new_tier <= MAX_SLOTS:
-            try:
-                # 데이터프레임에서 [행: Tier X, 열: Phase] 값을 찾음
-                w_val = params['tier_weights'].loc[f'Tier {new_tier}', phase]
-                target_seed_float = seed_equity * (w_val / 100.0)
-            except:
-                # 에러 발생 시 기본값 (1/10)
-                target_seed_float = seed_equity / MAX_SLOTS
-        else:
-            target_seed_float = seed_equity / MAX_SLOTS
-
-        # 3. 최종 배팅 금액 확정
         bet = min(target_seed_float, cash)
         if bet < 10: bet = 0
         
-        # 4. 매수 실행
-        if today_close <= target_p and len(holdings) < MAX_SLOTS and bet > 0 and new_tier <= MAX_SLOTS:
+        if today_close <= target_p and len(holdings) < MAX_SLOTS and bet > 0:
+            curr_tiers = {h[4] for h in holdings}
+            unavail = curr_tiers.union(tiers_sold)
+            new_tier = 1
+            while new_tier in unavail: new_tier += 1
             
-            final_qty = 0
-            if new_tier == MAX_SLOTS:
-                final_qty = int(bet / target_p)
-            else:
-                # 스마트 LOC 수량 계산 함수 호출
-                final_qty = calculate_loc_quantity(
-                    seed_amount=bet,
-                    order_price=target_p,
-                    close_price=today_close,
-                    buy_range= -1 * (params['loc_range'] / 100.0),
-                    max_add_orders=int(params['add_order_cnt'])
-                )
-            
-            max_buyable = int(cash / (today_close * (1 + params['fee_rate'])))
-            real_qty = min(final_qty, max_buyable)
-            
-            if real_qty > 0:
-                buy_amt = today_close * real_qty * (1 + params['fee_rate'])
-                cash -= buy_amt
-                holdings.append([today_close, 0, real_qty, phase, new_tier, dates[i]])
-                trade_log.append({
-                    'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase,
-                    'Price': today_close, 'Qty': real_qty, 'Profit': 0, 'Reason': 'LOC'
-                })
-        # [수정된 매수 로직 끝] ==============================================
+            if new_tier <= MAX_SLOTS:
+                final_qty = 0
+                if new_tier == MAX_SLOTS:
+                    final_qty = int(bet / target_p)
+                else:
+                    final_qty = calculate_loc_quantity(
+                        seed_amount=bet,
+                        order_price=target_p,
+                        close_price=today_close,
+                        buy_range= -1 * (params['loc_range'] / 100.0),
+                        max_add_orders=int(params['add_order_cnt'])
+                    )
+                max_buyable = int(cash / (today_close * (1 + params['fee_rate'])))
+                real_qty = min(final_qty, max_buyable)
+                
+                if real_qty > 0:
+                    buy_amt = today_close * real_qty * (1 + params['fee_rate'])
+                    cash -= buy_amt
+                    holdings.append([today_close, 0, real_qty, phase, new_tier, dates[i]])
+                    trade_log.append({
+                        'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase,
+                        'Price': today_close, 'Qty': real_qty, 'Profit': 0, 'Reason': 'LOC'
+                    })
         
         current_eq = cash + sum([h[2]*today_close for h in holdings])
         daily_equity.append(current_eq)
@@ -373,91 +352,40 @@ def backtest_engine_web(df, params):
 # --- [UI 구성] ---
 st.title("📊 쪼꼬야옹 백테스트 연구소")
 
-# ==============================================================================
-# [사이드바 UI 설정]
-# ==============================================================================
 with st.sidebar:
-    st.header("⚙️ 설정 패널")
+    st.header("⚙️ 기본 설정")
+    sheet_url = st.text_input("🔗 구글 시트 주소 (URL)", value=DEFAULT_SHEET_URL)
+    st.caption("※ 시트에 'Date', 'SOXL', 'QQQ' 데이터가 있어야 합니다.")
+    st.subheader("💰 자산 및 복리 설정")
+    balance = st.number_input("초기 자본 ($)", value=10000)
+    fee = st.number_input("수수료 (%)", value=0.07)
+    profit_rate = st.slider("이익 복리율 (%)", 0, 100, 70)
+    loss_rate = st.slider("손실 복리율 (%)", 0, 100, 50)
+    st.subheader("📥 LOC 설정")
+    add_order_cnt = st.number_input("추가 주문 횟수", value=4, min_value=1) 
+    loc_range = st.number_input("하단 범위 (-%)", value=20.0, min_value=0.0) 
+    st.subheader("📈 기간 설정")
     
-    # 1. 날짜 설정
+    # 1. 오늘 날짜를 구합니다.
     today = datetime.date.today()
-    st.subheader("📅 기간 설정")
-    start_date = st.date_input("시작일", value=datetime.date(2010, 1, 1), max_value=today)
-    end_date = st.date_input("종료일", value=today, max_value=today)
     
-    st.markdown("---")
-
-    # 2. 자산 및 기본 설정
-    st.subheader("💰 자산 및 수수료")
-    balance = st.number_input("초기 자본 ($)", value=20000, step=1000)
-    sheet_url = st.text_input("구글 시트 주소 (선택)", "")
-    fee = st.number_input("수수료 (%)", value=0.07, step=0.01, format="%.2f")
-    
-    st.markdown("---")
-
-    # 3. 전략 파라미터
-    st.subheader("📊 전략 파라미터")
-    ma_win = st.slider("이평선 기간 (일)", 10, 300, 200)
-    add_order_cnt = st.number_input("추가 주문 분할 수", value=4, step=1)
-    loc_range = st.number_input("LOC 범위 (%)", value=20.0, step=1.0)
-    
-    profit_rate = st.number_input("기본 익절 (%)", value=10.0)
-    loss_rate = st.number_input("손절 (%)", value=50.0)
-
-    st.markdown("---")
-
-    # 4. 구간별 설정 (바닥/천장/중간)
-    st.subheader("📉 바닥 (Bottom)")
-    bt_cond = st.number_input("이격도 기준 (이하)", value=-5.0)
-    bt_buy = st.number_input("매수 LOC (%)", value=-5.0, key='bb')
-    bt_prof = st.number_input("익절 (%)", value=10.0, key='bp')
-    bt_time = st.number_input("보유일수", value=20, key='bt')
-    
-    st.subheader("📈 천장 (Ceiling)")
-    cl_cond = st.number_input("이격도 기준 (이상)", value=10.0)
-    cl_buy = st.number_input("매수 LOC (%)", value=-1.0, key='cb')
-    cl_prof = st.number_input("익절 (%)", value=3.0, key='cp')
-    cl_time = st.number_input("보유일수", value=5, key='ct')
-    
-    st.subheader("➖ 중간 (Middle)")
-    md_buy = st.number_input("매수 LOC (%)", value=-3.0, key='mb')
-    md_prof = st.number_input("익절 (%)", value=5.0, key='mp')
-    md_time = st.number_input("보유일수", value=10, key='mt')
-
-    st.markdown("---")
-
-    # 5. [신규 기능] 티어별 비중 설정 (여기가 문제였던 부분)
-    st.subheader("⚖️ 티어별 비중 설정 (%)")
-    st.caption("각 구간(모드)별로 티어 진입 비중을 설정합니다. (합계 100% 권장)")
-
-    # 기본값 생성 (모두 10%)
-    default_data = {
-        'Tier': [f'Tier {i}' for i in range(1, 11)],
-        'Bottom': [10.0] * 10,
-        'Middle': [10.0] * 10,
-        'Ceiling': [10.0] * 10
-    }
-    df_weights_default = pd.DataFrame(default_data).set_index('Tier')
-
-    # 데이터 에디터 (수정 가능)
-    edited_weights = st.data_editor(
-        df_weights_default,
-        column_config={
-            "Bottom": st.column_config.NumberColumn("바닥(%)", min_value=0, max_value=100, format="%.1f%%"),
-            "Middle": st.column_config.NumberColumn("중간(%)", min_value=0, max_value=100, format="%.1f%%"),
-            "Ceiling": st.column_config.NumberColumn("천장(%)", min_value=0, max_value=100, format="%.1f%%"),
-        },
-        use_container_width=True,
-        key='weight_editor'
+    # 2. 시작일 설정
+    # value: 기본값 (2010년 1월 1일로 설정 - 원하시는 대로 수정 가능)
+    # max_value: 오늘 이후로는 선택 못하게 막음 (미래 데이터는 없으니까요)
+    start_date = st.date_input(
+        "시작일", 
+        value=datetime.date(2010, 1, 1), 
+        max_value=today
     )
-
-    # 합계 검증 알림
-    sum_bot = edited_weights['Bottom'].sum()
-    sum_mid = edited_weights['Middle'].sum()
-    sum_ceil = edited_weights['Ceiling'].sum()
-
-    if not (math.isclose(sum_bot, 100, abs_tol=0.1) and math.isclose(sum_mid, 100, abs_tol=0.1) and math.isclose(sum_ceil, 100, abs_tol=0.1)):
-         st.warning(f"⚠️ 비중 합계가 100%가 아닙니다! (바닥:{sum_bot:.0f}%, 중간:{sum_mid:.0f}%, 천장:{sum_ceil:.0f}%)")
+    
+    # 3. 종료일 설정
+    # value: 기본값을 'today'(오늘)로 설정 -> 매일 접속할 때마다 자동으로 바뀝니다.
+    # max_value: 오늘 이후 날짜 선택 방지
+    end_date = st.date_input(
+        "종료일", 
+        value=today, 
+        max_value=today
+    )
 
 if sheet_url:
     df = load_data_from_gsheet(sheet_url)
@@ -773,11 +701,9 @@ MY_BEST_PARAMS = {{
                 'force_round': True, 'ma_window': ma_win, 
                 'bt_cond': bt_cond, 'bt_buy': bt_buy, 'bt_prof': bt_prof/100, 'bt_time': bt_time,
                 'md_buy': md_buy, 'md_prof': md_prof/100, 'md_time': md_time,
-                'cl_cond': cl_cond, 'cl_buy': cl_buy, 'cl_prof': cl_prof/100, 'cl_time': cl_time,
-                
-                # [추가] 비중 데이터프레임을 파라미터로 넘깁니다.
-                'tier_weights': edited_weights 
+                'cl_cond': cl_cond, 'cl_buy': cl_buy, 'cl_prof': cl_prof/100, 'cl_time': cl_time
             }
+            
             # 조용히 백테스트 실행하여 최신 상태 가져오기
             res = backtest_engine_web(df, dash_params)
             
@@ -1005,6 +931,4 @@ MY_BEST_PARAMS = {{
                     st.info("아직 체결된 매매 기록이 없습니다.")
 
 else:
-
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
-
