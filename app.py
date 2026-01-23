@@ -164,15 +164,38 @@ def calculate_loc_quantity(seed_amount, order_price, close_price, buy_range, max
 # --- [백테스트 엔진] ---
 def backtest_engine_web(df, params):
     df = df.copy()
-    ma_window = int(params['ma_window'])
-    df['MA_New'] = df['QQQ'].rolling(window=ma_window, min_periods=1).mean()
-    df['Disparity'] = df['QQQ'] / df['MA_New']
     
-    weekly_series = df['Disparity'].resample('W-FRI').last()
-    weekly_df = pd.DataFrame({'Basis_Disp': weekly_series})
-    calendar_df = weekly_df.resample('D').ffill()
-    daily_mapped = calendar_df.shift(1).reindex(df.index).ffill()
-    df['Basis_Disp'] = daily_mapped['Basis_Disp']
+    # ------------------------------------------------------------------
+    # [수정] 구글 시트와 동일한 '주봉(Weekly) 기준' 이격도 계산 로직
+    # ------------------------------------------------------------------
+    
+    # 1. 일봉 데이터를 '주봉(매주 금요일)'으로 변환합니다.
+    # (QQQ 종가만 가져와서 주봉을 만듭니다)
+    df_weekly = df['QQQ'].resample('W-FRI').last().to_frame()
+    
+    # 2. 주봉 기준 이동평균선(MA) 계산
+    # 사용자가 입력한 ma_window(예: 200)을 '200주'로 적용합니다.
+    ma_window = int(params['ma_window'])
+    df_weekly['MA_Weekly'] = df_weekly['QQQ'].rolling(window=ma_window, min_periods=1).mean()
+    
+    # 3. 주봉 기준 이격도(%) 계산
+    # 공식: (주봉종가 / 200주이평선 - 1) * 100
+    df_weekly['Weekly_Disp_Pct'] = (df_weekly['QQQ'] / df_weekly['MA_Weekly'] - 1) * 100
+    
+    # 4. 주봉 데이터를 다시 일봉(Daily)으로 확장 (Merge)
+    # 매일매일의 날짜에 '가장 최근 마감된 주봉의 이격도'를 채워 넣습니다.
+    # ffill()을 사용하여 금요일에 계산된 값을 다음 목요일까지 유지합니다.
+    df_weekly_expanded = df_weekly['Weekly_Disp_Pct'].reindex(df.index, method='ffill')
+    
+    # 5. 최종 적용 (Look-ahead Bias 방지)
+    # 실전에서는 '어제까지의 데이터'로 '오늘' 판단하므로 shift(1)은 유지하지만,
+    # 주봉 로직 특성상 '지난주 금요일 값'이 이번주 내내 적용되는 구조입니다.
+    df['Basis_Disp'] = df_weekly_expanded.shift(1).fillna(0)
+    
+    # (확인용 컬럼: 로그에 찍어볼 수 있음)
+    df['MA_Check'] = df_weekly['MA_Weekly'].reindex(df.index, method='ffill').shift(1)
+
+    # ------------------------------------------------------------------
     df['Prev_Close'] = df['SOXL'].shift(1)
     
     start_dt = pd.to_datetime(params['start_date'])
@@ -1003,5 +1026,6 @@ MY_BEST_PARAMS = {{
 else:
 
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
 
 
