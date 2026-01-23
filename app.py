@@ -227,8 +227,8 @@ def backtest_engine_web(df, params):
         else: phase = 'Middle'
 
         conf = strategy[phase]
-        target_seed_float = seed_equity / MAX_SLOTS
-        target_seed = int(target_seed_float + 0.5)
+        # target_seed_float = seed_equity / MAX_SLOTS
+        # target_seed = int(target_seed_float + 0.5)
 
         tiers_sold = set()
         daily_net_profit_sum = 0
@@ -269,42 +269,63 @@ def backtest_engine_web(df, params):
             rate = params['profit_rate'] if daily_net_profit_sum > 0 else params['loss_rate']
             seed_equity += daily_net_profit_sum * rate
             
+        # [수정된 매수 로직 시작] ==============================================
         prev_c = row['Prev_Close'] if not pd.isna(row['Prev_Close']) else today_close
         if pd.isna(prev_c): prev_c = today_close
             
         target_p = excel_round_down(prev_c * (1 + conf['buy'] / 100), 2)
+        
+        # 1. 들어갈 티어(New Tier)를 먼저 계산 (비중을 알기 위해 필수)
+        curr_tiers = {h[4] for h in holdings}
+        unavail = curr_tiers.union(tiers_sold)
+        new_tier = 1
+        while new_tier in unavail: new_tier += 1
+        
+        # 2. 해당 티어의 비중(%)을 가져와서 시드(bet) 계산
+        # params에 'tier_weights' 표가 있으면 그걸 쓰고, 없으면 1/10 적용
+        if 'tier_weights' in params and new_tier <= MAX_SLOTS:
+            try:
+                # 데이터프레임에서 [행: Tier X, 열: Phase] 값을 찾음
+                w_val = params['tier_weights'].loc[f'Tier {new_tier}', phase]
+                target_seed_float = seed_equity * (w_val / 100.0)
+            except:
+                # 에러 발생 시 기본값 (1/10)
+                target_seed_float = seed_equity / MAX_SLOTS
+        else:
+            target_seed_float = seed_equity / MAX_SLOTS
+
+        # 3. 최종 배팅 금액 확정
         bet = min(target_seed_float, cash)
         if bet < 10: bet = 0
         
-        if today_close <= target_p and len(holdings) < MAX_SLOTS and bet > 0:
-            curr_tiers = {h[4] for h in holdings}
-            unavail = curr_tiers.union(tiers_sold)
-            new_tier = 1
-            while new_tier in unavail: new_tier += 1
+        # 4. 매수 실행
+        if today_close <= target_p and len(holdings) < MAX_SLOTS and bet > 0 and new_tier <= MAX_SLOTS:
             
-            if new_tier <= MAX_SLOTS:
-                final_qty = 0
-                if new_tier == MAX_SLOTS:
-                    final_qty = int(bet / target_p)
-                else:
-                    final_qty = calculate_loc_quantity(
-                        seed_amount=bet,
-                        order_price=target_p,
-                        close_price=today_close,
-                        buy_range= -1 * (params['loc_range'] / 100.0),
-                        max_add_orders=int(params['add_order_cnt'])
-                    )
-                max_buyable = int(cash / (today_close * (1 + params['fee_rate'])))
-                real_qty = min(final_qty, max_buyable)
-                
-                if real_qty > 0:
-                    buy_amt = today_close * real_qty * (1 + params['fee_rate'])
-                    cash -= buy_amt
-                    holdings.append([today_close, 0, real_qty, phase, new_tier, dates[i]])
-                    trade_log.append({
-                        'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase,
-                        'Price': today_close, 'Qty': real_qty, 'Profit': 0, 'Reason': 'LOC'
-                    })
+            final_qty = 0
+            if new_tier == MAX_SLOTS:
+                final_qty = int(bet / target_p)
+            else:
+                # 스마트 LOC 수량 계산 함수 호출
+                final_qty = calculate_loc_quantity(
+                    seed_amount=bet,
+                    order_price=target_p,
+                    close_price=today_close,
+                    buy_range= -1 * (params['loc_range'] / 100.0),
+                    max_add_orders=int(params['add_order_cnt'])
+                )
+            
+            max_buyable = int(cash / (today_close * (1 + params['fee_rate'])))
+            real_qty = min(final_qty, max_buyable)
+            
+            if real_qty > 0:
+                buy_amt = today_close * real_qty * (1 + params['fee_rate'])
+                cash -= buy_amt
+                holdings.append([today_close, 0, real_qty, phase, new_tier, dates[i]])
+                trade_log.append({
+                    'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase,
+                    'Price': today_close, 'Qty': real_qty, 'Profit': 0, 'Reason': 'LOC'
+                })
+        # [수정된 매수 로직 끝] ==============================================
         
         current_eq = cash + sum([h[2]*today_close for h in holdings])
         daily_equity.append(current_eq)
@@ -386,6 +407,39 @@ with st.sidebar:
         value=today, 
         max_value=today
     )
+
+st.markdown("---")
+    st.subheader("⚖️ 티어별 비중 설정 (%)")
+    st.caption("각 구간(모드)별로 티어 진입 비중을 다르게 설정합니다.")
+
+    # 1. 기본 비중 데이터프레임 생성 (기본값: 모두 10%)
+    default_data = {
+        'Tier': [f'Tier {i}' for i in range(1, 11)],
+        'Bottom': [10.0] * 10,  # 바닥 모드 비중
+        'Middle': [10.0] * 10,  # 중간 모드 비중
+        'Ceiling': [10.0] * 10  # 천장 모드 비중
+    }
+    df_weights_default = pd.DataFrame(default_data).set_index('Tier')
+
+    # 2. 데이터 에디터 출력 (사용자가 직접 수정 가능)
+    # num_rows="fixed": 행 개수 고정 (10개 티어)
+    edited_weights = st.data_editor(
+        df_weights_default,
+        column_config={
+            "Bottom": st.column_config.NumberColumn("바닥(%)", min_value=0, max_value=100, format="%.1f%%"),
+            "Middle": st.column_config.NumberColumn("중간(%)", min_value=0, max_value=100, format="%.1f%%"),
+            "Ceiling": st.column_config.NumberColumn("천장(%)", min_value=0, max_value=100, format="%.1f%%"),
+        },
+        use_container_width=True
+    )
+
+    # 3. 합계 검증 (사용자 편의용)
+    sum_bot = edited_weights['Bottom'].sum()
+    sum_mid = edited_weights['Middle'].sum()
+    sum_ceil = edited_weights['Ceiling'].sum()
+
+    if sum_bot != 100 or sum_mid != 100 or sum_ceil != 100:
+        st.warning(f"⚠️ 비중 합계 주의: 바닥({sum_bot}%), 중간({sum_mid}%), 천장({sum_ceil}%)")
 
 if sheet_url:
     df = load_data_from_gsheet(sheet_url)
@@ -701,9 +755,11 @@ MY_BEST_PARAMS = {{
                 'force_round': True, 'ma_window': ma_win, 
                 'bt_cond': bt_cond, 'bt_buy': bt_buy, 'bt_prof': bt_prof/100, 'bt_time': bt_time,
                 'md_buy': md_buy, 'md_prof': md_prof/100, 'md_time': md_time,
-                'cl_cond': cl_cond, 'cl_buy': cl_buy, 'cl_prof': cl_prof/100, 'cl_time': cl_time
+                'cl_cond': cl_cond, 'cl_buy': cl_buy, 'cl_prof': cl_prof/100, 'cl_time': cl_time,
+                
+                # [추가] 비중 데이터프레임을 파라미터로 넘깁니다.
+                'tier_weights': edited_weights 
             }
-            
             # 조용히 백테스트 실행하여 최신 상태 가져오기
             res = backtest_engine_web(df, dash_params)
             
@@ -931,4 +987,5 @@ MY_BEST_PARAMS = {{
                     st.info("아직 체결된 매매 기록이 없습니다.")
 
 else:
+
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
