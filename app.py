@@ -165,6 +165,41 @@ def calculate_loc_quantity(seed_amount, order_price, close_price, buy_range, max
 def backtest_engine_web(df, params):
     df = df.copy()
     
+    # [진단 모드] 데이터 정합성 체크
+    df = df.sort_index(ascending=True)
+    df = df[~df.index.duplicated(keep='last')]
+    df['QQQ'] = df['QQQ'].fillna(method='ffill')
+
+    # MA 계산 (거래일 기준 200 단순이평)
+    ma_win = int(params['ma_window'])
+    df['MA_Daily'] = df['QQQ'].rolling(window=ma_win, min_periods=ma_win).mean().round(2)
+    
+    # -------------------------------------------------------------
+    # [범인 색출] 200일 전 가격과 현재 가격 기록
+    # -------------------------------------------------------------
+    # 200일 전(Start)과 오늘(End)의 가격을 알면 데이터 밀림을 알 수 있습니다.
+    # shift(ma_win - 1) : 199일 전 데이터 가져오기
+    
+    df['Debug_Start_Price'] = df['QQQ'].shift(ma_win - 1) # 집계 시작일의 가격
+    df['Debug_End_Price']   = df['QQQ']                   # 집계 종료일(오늘)의 가격
+    
+    # 금요일 스냅샷
+    cols = ['QQQ', 'MA_Daily', 'Debug_Start_Price']
+    weekly_data = df[cols].resample('W-FRI').last()
+    weekly_data.columns = ['QQQ_Fri', 'MA_Fri', 'Start_Price_Fri']
+    
+    # 이격도 및 확장
+    weekly_data['Disp_Fri'] = (weekly_data['QQQ_Fri'] / weekly_data['MA_Fri'] - 1) * 100
+    weekly_expanded = weekly_data.reindex(df.index, method='ffill').shift(1)
+    
+    df['Basis_Disp'] = weekly_expanded['Disp_Fri'].fillna(0)
+    
+    # 로그용 매핑
+    df['Log_Ref_Date']      = weekly_data.index.to_series().reindex(df.index, method='ffill').shift(1)
+    df['Log_QQQ_Fri']       = weekly_expanded['QQQ_Fri']
+    df['Log_MA_Fri']        = weekly_expanded['MA_Fri']
+    df['Log_Start_Price']   = weekly_expanded['Start_Price_Fri'] # 200일 전 가격
+    
     # ------------------------------------------------------------------
     # [최종 정밀 동기화] 구글 시트 수식 파이썬 구현
     # 수식: ROUND(AVERAGE(OFFSET(..., -199, 0, 200, 1)), 2)
@@ -309,7 +344,9 @@ def backtest_engine_web(df, params):
                 trade_log.append({
                 'Date': dates[i], 'Type': 'Sell', 'Tier': tier, 'Phase': mode, 'Ref_Date': row['Log_Ref_Date'].strftime('%Y-%m-%d') if pd.notnull(row['Log_Ref_Date']) else '-',
                 'QQQ_Fri': row['Log_QQQ_Fri'],
-                'MA_Calc': row['Log_MA_Fri'], 'Disp': disp,
+                'MA_Calc': row['Log_MA_Fri'], 'Disp': disp, 'QQQ_Fri': row['Log_QQQ_Fri'],     # 1. 1월 2일의 QQQ 가격 (613.12 인지 확인)
+                'Start_P': row['Log_Start_Price'], # 2. 200일 전(시작점) QQQ 가격
+                'MA_Calc': row['Log_MA_Fri'],
                 'Price': today_close, 'Qty': qty, 'Profit': real_profit, 'Reason': reason
                 })
             else:
@@ -376,7 +413,9 @@ def backtest_engine_web(df, params):
                             'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase, 'Ref_Date': row['Log_Ref_Date'].strftime('%Y-%m-%d') if pd.notnull(row['Log_Ref_Date']) else '-',
                             'QQQ_Fri': row['Log_QQQ_Fri'],
                             'MA_Calc': row['Log_MA_Fri'], 
-							'Disp': disp, 
+							'Disp': disp, 'QQQ_Fri': row['Log_QQQ_Fri'],     # 1. 1월 2일의 QQQ 가격 (613.12 인지 확인)
+                            'Start_P': row['Log_Start_Price'], # 2. 200일 전(시작점) QQQ 가격
+                            'MA_Calc': row['Log_MA_Fri'],
                             'Price': today_close, 'Qty': real_qty, 'Profit': 0, 'Reason': 'LOC'
                         })
         
@@ -1056,6 +1095,7 @@ MY_BEST_PARAMS = {{
 else:
 
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
 
 
 
