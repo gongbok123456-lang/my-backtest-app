@@ -296,7 +296,7 @@ def backtest_engine_web(df, params):
                 trade_log.append({
                 'Date': dates[i], 'Type': 'Sell', 'Tier': tier, 'Phase': mode, 'Ref_Date': row['Log_Ref_Date'].strftime('%Y-%m-%d') if pd.notnull(row['Log_Ref_Date']) else '-',
                 'QQQ_Fri': row['Log_QQQ_Fri'],
-                'MA_Calc': row['Log_MA_Fri'], 'Disp': disp,
+                'MA_Calc': row['Log_SMA_Fri'], 'Disp': disp,
                 'Price': today_close, 'Qty': qty, 'Profit': real_profit, 'Reason': reason
                 })
             else:
@@ -362,7 +362,7 @@ def backtest_engine_web(df, params):
                         trade_log.append({
                             'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase, 'Ref_Date': row['Log_Ref_Date'].strftime('%Y-%m-%d') if pd.notnull(row['Log_Ref_Date']) else '-',
                             'QQQ_Fri': row['Log_QQQ_Fri'],  # 우리가 "정확히 알고 있다"는 그 주봉값
-                            'MA_Calc': row['Log_MA_Fri'], 
+                            'MA_Calc': row['Log_SMA_Fri'], 
 							'Disp': disp, 
                             'Price': today_close, 'Qty': real_qty, 'Profit': 0, 'Reason': 'LOC'
                         })
@@ -1043,6 +1043,7 @@ MY_BEST_PARAMS = {{
 else:
 
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
 
 
 
