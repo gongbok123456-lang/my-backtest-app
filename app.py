@@ -166,47 +166,58 @@ def backtest_engine_web(df, params):
     df = df.copy()
     
     # ------------------------------------------------------------------
-    # [최종 정답] 엑셀 수식 완벽 구현
-    # 수식: ROUND(AVERAGE(OFFSET(..., 200, ...)), 2)
-    # 의미: "거래일 기준" 200일 단순이평(SMA) -> 소수점 2자리 반올림
+    # [최종 정밀 동기화] 구글 시트 수식 파이썬 구현
+    # 수식: ROUND(AVERAGE(OFFSET(..., -199, 0, 200, 1)), 2)
+    # 원리: 날짜 오름차순 정렬 상태에서 '직전 200개 행'의 단순 평균을 소수점 2자리로 반올림
     # ------------------------------------------------------------------
     
-    # 1. [데이터 정렬] 날짜순 정렬 (필수)
-    df = df.sort_index()
-    # 혹시 중복된 날짜가 있다면 제거
+    # 1. [필수] 날짜 기준 오름차순 정렬 (과거 -> 미래)
+    # 엑셀은 보통 위에서 아래로 날짜가 흐르므로, 파이썬도 순서를 맞춰야 OFFSET 로직이 성립합니다.
+    df = df.sort_index(ascending=True)
+    
+    # 2. [데이터 정제] 중복 제거 및 빈 값 처리
+    # 같은 날짜가 2개 있으면 200개가 밀리므로 제거
     df = df[~df.index.duplicated(keep='last')]
     
-    # 2. [MA 계산] 엑셀 수식 로직 적용
+    # QQQ 값이 비어있으면(NaN) 계산이 안 되므로, 전일 값으로 채우거나(ffill) 그대로 둡니다.
+    # 엑셀 AVERAGE는 빈 칸을 무시하지만, rolling은 NaN이 있으면 결과도 NaN일 수 있습니다.
+    # 데이터 연속성을 위해 채워줍니다.
+    df['QQQ'] = df['QQQ'].fillna(method='ffill')
+    
+    # 3. [MA 계산] 엑셀 수식 1:1 대응
+    # window=200 : OFFSET(..., 200, ...)
+    # mean()     : AVERAGE(...)
+    # round(2)   : ROUND(..., 2)
+    
     ma_win = int(params['ma_window']) # 200
+    df['MA_Daily'] = df['QQQ'].rolling(window=ma_win, min_periods=ma_win).mean().round(2)
     
-    # (1) rolling(window=200).mean() : 200일치 종가의 단순 평균 (AVERAGE + OFFSET)
-    # (2) .round(2) : 소수점 둘째 자리 반올림 (ROUND)
-    # ※ 주의: min_periods=1을 쓰면 데이터가 200개 안 돼도 계산해버리니, 
-    #    엑셀의 IF(Row<MA,"") 처럼 정확히 하려면 min_periods=ma_win을 써야 하지만,
-    #    백테스트 초반 데이터 확보를 위해 여기선 min_periods=1 유지 (큰 차이 없음)
+    # 참고: min_periods=ma_win으로 설정하면, 데이터가 200개 쌓이기 전(앞부분)은 NaN으로 나옵니다.
+    # (엑셀의 IF(Row < MA, "", ...) 로직과 동일)
     
-    df['MA_Excel_Logic'] = df['QQQ'].rolling(window=ma_win, min_periods=1).mean().round(2)
+    # ------------------------------------------------------------------
+    # [전략 적용] 금요일(주봉) 기준 모드 판단 (VR 전략)
+    # ------------------------------------------------------------------
     
-    # 3. [금요일 스냅샷] 매주 금요일의 값만 추출
-    # 구글 시트는 금요일의 이 MA값을 기준으로 이격도를 판단함
-    cols_needed = ['QQQ', 'MA_Excel_Logic']
-    weekly_data = df[cols_needed].resample('W-FRI').last()
-    
+    # 1. 금요일 스냅샷 추출 (QQQ 종가, 계산된 MA 값)
+    # 구글 시트는 "금요일 날짜 행"에 적힌 MA 값을 가져갑니다.
+    weekly_data = df[['QQQ', 'MA_Daily']].resample('W-FRI').last()
     weekly_data.columns = ['QQQ_Fri', 'MA_Fri']
     
-    # 4. [이격도 계산] 금요일 기준
+    # 2. 이격도 계산 (금요일 기준)
     weekly_data['Disp_Fri'] = (weekly_data['QQQ_Fri'] / weekly_data['MA_Fri'] - 1) * 100
     
-    # 5. [다음주 적용] 금요일 확정값을 월요일부터 사용 (Shift 1)
+    # 3. 다음주 적용 (Shift 1)
+    # 금요일에 확정된 값을 -> 다음주 월요일부터 사용
     weekly_expanded = weekly_data.reindex(df.index, method='ffill').shift(1)
     
-    # 최종 적용
+    # 4. 최종 데이터 매핑
     df['Basis_Disp'] = weekly_expanded['Disp_Fri'].fillna(0)
     
-    # [로그 확인용 데이터]
+    # [로그 확인용]
     df['Log_Ref_Date'] = weekly_data.index.to_series().reindex(df.index, method='ffill').shift(1)
     df['Log_QQQ_Fri']  = weekly_expanded['QQQ_Fri']
-    df['Log_MA_Fri']   = weekly_expanded['MA_Fri'] # 이게 558.50 이어야 함!
+    df['Log_MA_Fri']   = weekly_expanded['MA_Fri']
 
     # ------------------------------------------------------------------
 
@@ -298,7 +309,7 @@ def backtest_engine_web(df, params):
                 trade_log.append({
                 'Date': dates[i], 'Type': 'Sell', 'Tier': tier, 'Phase': mode, 'Ref_Date': row['Log_Ref_Date'].strftime('%Y-%m-%d') if pd.notnull(row['Log_Ref_Date']) else '-',
                 'QQQ_Fri': row['Log_QQQ_Fri'],
-                'MA_Excel': row['Log_MA_Fri'], 'Disp': disp,
+                'MA_Calc': row['Log_MA_Fri'], 'Disp': disp,
                 'Price': today_close, 'Qty': qty, 'Profit': real_profit, 'Reason': reason
                 })
             else:
@@ -364,7 +375,7 @@ def backtest_engine_web(df, params):
                         trade_log.append({
                             'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase, 'Ref_Date': row['Log_Ref_Date'].strftime('%Y-%m-%d') if pd.notnull(row['Log_Ref_Date']) else '-',
                             'QQQ_Fri': row['Log_QQQ_Fri'],
-                            'MA_Excel': row['Log_MA_Fri'], 
+                            'MA_Calc': row['Log_MA_Fri'], 
 							'Disp': disp, 
                             'Price': today_close, 'Qty': real_qty, 'Profit': 0, 'Reason': 'LOC'
                         })
@@ -1045,6 +1056,7 @@ MY_BEST_PARAMS = {{
 else:
 
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
 
 
 
