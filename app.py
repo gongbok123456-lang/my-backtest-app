@@ -166,43 +166,40 @@ def backtest_engine_web(df, params):
     df = df.copy()
     
     # ------------------------------------------------------------------
-    # [최종 확인 모드] 단순(SMA) vs 지수(EMA) 비교
+    # [최종 동기화] 구글 시트 로직 완벽 복제
+    # 로직: "매일 200일선을 계산한 뒤, 금요일의 그 값만 가져와서 다음주에 쓴다."
     # ------------------------------------------------------------------
     
-    ma_win = int(params['ma_window']) # 기본 200
+    ma_win = int(params['ma_window']) # 200
     
-    # 1. 일봉 기준 단순이동평균 (SMA)
-    # 구글 시트 함수: AVERAGE(지난 200일)
-    df['MA_SMA'] = df['QQQ'].rolling(window=ma_win, min_periods=1).mean()
+    # 1. [Daily] 일봉 기준으로 200일 단순이동평균(SMA) 계산
+    # (구글 시트 P열을 그대로 재현)
+    df['MA_Daily_SMA'] = df['QQQ'].rolling(window=ma_win, min_periods=1).mean()
     
-    # 2. 일봉 기준 지수이동평균 (EMA)
-    # 구글 시트가 이걸 쓸 확률이 높습니다. (최신 가격 가중)
-    df['MA_EMA'] = df['QQQ'].ewm(span=ma_win, adjust=False).mean()
+    # 2. [Snapshot] 매주 금요일의 데이터만 추출 (Close & MA)
+    # resample('W-FRI').last()는 그 주의 마지막(금요일) 값을 가져옵니다.
+    # 즉, 금요일의 QQQ 종가와, 금요일 당시에 계산된 MA값을 가져옵니다.
+    weekly_data = df[['QQQ', 'MA_Daily_SMA']].resample('W-FRI').last()
     
-    # 3. 로그 남기기용 데이터 준비
-    # 실전 매매에서는 '전일(어제) 종가' 기준으로 판단하므로 shift(1)
-    # (하지만 구글 시트 수식이 금요일 당일 값을 쓴다면 shift(0)일 수도 있음)
-    # 비교를 위해 당일 값(shift 0)과 전일 값(shift 1)을 모두 준비할 수도 있지만,
-    # 여기서는 백테스트 정석대로 '매매 시점 기준(전일 확정값)'으로 로그를 남깁니다.
+    # 컬럼 이름 변경 (헷갈리지 않게)
+    weekly_data.columns = ['QQQ_Fri', 'MA_Fri']
     
-    # 로그용: 어제 날짜의 MA 값들
-    df['Log_MA_SMA'] = df['MA_SMA'].shift(1)
-    df['Log_MA_EMA'] = df['MA_EMA'].shift(1)
+    # 3. [Calculate] 금요일 기준 이격도 계산
+    # 구글 시트 수식: (AE열 종가 / P열 MA - 1) * 100
+    weekly_data['Disp_Fri'] = (weekly_data['QQQ_Fri'] / weekly_data['MA_Fri'] - 1) * 100
     
-    # ------------------------------------------------------------------
-    # [전략 적용] 모드 판단 로직 (일단 SMA 기준으로 계산 - 나중에 EMA로 확정 가능)
-    # ------------------------------------------------------------------
+    # 4. [Apply] 금요일 데이터를 '다음주 월~금'으로 확장 (Shift & Forward Fill)
+    # shift(1)을 해야 "1월 9일(금) 데이터"가 "1월 12일(월)"부터 적용됨 (미래 참조 방지)
     
-    # 이격도 계산 (일봉 SMA 200 기준) -> 나중에 EMA가 맞으면 여기를 MA_EMA로 바꾸면 됨
-    df['Disp_Daily'] = (df['QQQ'] / df['MA_SMA'] - 1) * 100
+    weekly_expanded = weekly_data.reindex(df.index, method='ffill').shift(1)
     
-    # 금요일 값 고정 (VR 전략)
-    weekly_disp = df['Disp_Daily'].resample('W-FRI').last()
-    df['Basis_Disp'] = weekly_disp.reindex(df.index, method='ffill').shift(1).fillna(0)
+    # 데이터프레임에 매핑
+    df['Basis_Disp'] = weekly_expanded['Disp_Fri'].fillna(0) # 모드 판단용 이격도
     
-    # 로그용: 금요일 확정된 QQQ 종가 (주봉 값)
-    df_weekly_close = df['QQQ'].resample('W-FRI').last()
-    df['Log_QQQ_W'] = df_weekly_close.reindex(df.index, method='ffill').shift(1)
+    # 로그 확인용 (사용자님이 비교하기 편하게)
+    df['Log_Ref_Date'] = weekly_data.index.to_series().reindex(df.index, method='ffill').shift(1) # 기준일(지난주 금요일)
+    df['Log_QQQ_Fri']  = weekly_expanded['QQQ_Fri']        # 기준일 QQQ 종가
+    df['Log_MA_Fri']   = weekly_expanded['MA_Fri']         # 기준일 MA 값
 
     # ------------------------------------------------------------------
 
@@ -292,8 +289,10 @@ def backtest_engine_web(df, params):
                 trade_count += 1
                 if real_profit > 0: win_count += 1
                 trade_log.append({
-                    'Date': dates[i], 'Type': 'Sell', 'Tier': tier, 'Phase': mode, 'QQQ_W': row['Log_QQQ_W'], 'SMA_200': row['Log_MA_SMA'], 'EMA_200': row['Log_MA_EMA'], 'Disp': disp,
-                    'Price': today_close, 'Qty': qty, 'Profit': real_profit, 'Reason': reason
+                'Date': dates[i], 'Type': 'Sell', 'Tier': tier, 'Phase': mode, 'Ref_Date': row['Log_Ref_Date'].strftime('%Y-%m-%d') if pd.notnull(row['Log_Ref_Date']) else '-',
+                'QQQ_W': row['Log_QQQ_Fri'],
+                'MA_200': row['Log_MA_Fri'], 'Disp': disp,
+                'Price': today_close, 'Qty': qty, 'Profit': real_profit, 'Reason': reason
                 })
             else:
                 stock[1] = days
@@ -356,7 +355,9 @@ def backtest_engine_web(df, params):
                         cash -= buy_amt
                         holdings.append([today_close, 0, real_qty, phase, new_tier, dates[i]])
                         trade_log.append({
-                            'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase, 'QQQ_W': row['Log_QQQ_W'], 'SMA_200': row['Log_MA_SMA'], 'EMA_200': row['Log_MA_EMA'], 
+                            'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase, 'Ref_Date': row['Log_Ref_Date'].strftime('%Y-%m-%d') if pd.notnull(row['Log_Ref_Date']) else '-',
+                            'QQQ_W': row['Log_QQQ_Fri'],
+                            'MA_200': row['Log_MA_Fri'], 
 							'Disp': disp, 
                             'Price': today_close, 'Qty': real_qty, 'Profit': 0, 'Reason': 'LOC'
                         })
@@ -1037,6 +1038,7 @@ MY_BEST_PARAMS = {{
 else:
 
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
 
 
 
