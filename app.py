@@ -166,71 +166,66 @@ def backtest_engine_web(df, params):
     df = df.copy()
     
     # ------------------------------------------------------------------
-    # [최종 수정] "있는 그대로" 순서 존중 (Raw Order)
-    # 구글 시트의 행 순서와 100% 일치시키기 위해 정렬/제거를 하지 않습니다.
+    # [최종 수정] "있는 그대로" 순서 존중 + 디버깅 컬럼 복구
     # ------------------------------------------------------------------
     
-    # 1. [중요] 정렬 및 중복 제거 코드 삭제!
-    # df = df.sort_index()  <-- (삭제) 구글 시트 순서 그대로 믿음
-    # df = df[~df.index.duplicated()] <-- (삭제) 중복 있어도 엑셀처럼 포함해서 계산
+    # 1. 정렬/중복제거 코드 삭제 (구글 시트 행 순서 100% 신뢰)
+    # (df = df.sort_index() ... 삭제함)
     
-    # 혹시 QQQ가 숫자가 아니라면 변환 (안전장치)
+    # QQQ 숫자 변환 (안전장치)
     df['QQQ'] = pd.to_numeric(df['QQQ'], errors='coerce')
     
     # 2. 거래일 기준 200 단순이평 (SMA) -> 반올림
     ma_win = int(params['ma_window']) # 200
     
-    # 데이터 순서대로 200개씩 묶어서 평균
+    # 데이터 순서대로 200개씩 묶어서 평균 (min_periods=1 유지)
     df['MA_Daily'] = df['QQQ'].rolling(window=ma_win, min_periods=1).mean().round(2)
     
-    # 3. 금요일 스냅샷 추출
-    # 여기서도 날짜 인덱스에 의존하기보다, '요일' 정보를 새로 뽑아서 필터링합니다.
-    # (인덱스가 중복되거나 정렬 안 되어 있을 수도 있으므로)
+    # ★ [오류 수정] 로그에 찍을 '200일 전 가격' 컬럼 생성
+    # 현재 행을 기준으로 199번째 전(Start Point)의 가격을 가져옵니다.
+    df['Log_Start_Price'] = df['QQQ'].shift(ma_win - 1)
     
-    # 요일 컬럼 생성 (0=월, 4=금)
+    # 3. 금요일 스냅샷 추출
+    # 요일 정보로 필터링 (0=월...4=금)
     df['Weekday'] = df.index.dayofweek
     
-    # "금요일인 행"만 추출 (휴장일 처리 로직은 load_data에 맡김 or 단순 금요일 추출)
-    # 구글 시트 수식(FILTER)과 동일하게 "금요일 날짜"를 가진 행을 가져옵니다.
+    # 금요일(4)인 행만 추출
+    # (주의: 여기에 Log_Start_Price도 같이 가져가야 합니다!)
     weekly_data = df[df['Weekday'] == 4].copy()
     
     # 필요한 값만 남기기
-    weekly_data = weekly_data[['QQQ', 'MA_Daily']]
-    weekly_data.columns = ['QQQ_Fri', 'MA_Fri']
+    weekly_data = weekly_data[['QQQ', 'MA_Daily', 'Log_Start_Price']]
+    weekly_data.columns = ['QQQ_Fri', 'MA_Fri', 'Start_Price_Fri']
     
     # 4. 이격도 계산
     weekly_data['Disp_Fri'] = (weekly_data['QQQ_Fri'] / weekly_data['MA_Fri'] - 1) * 100
     
     # 5. 전체 확장 (Shift 1)
-    # 다시 전체 df의 인덱스에 맞춰서 늘려줍니다.
-    # (주의: sort_index를 안 했으므로, reindex 시 문제가 될 수 있어 여기서만 잠깐 정렬해서 매핑)
-    
-    # 매핑을 위해 잠시 정렬된 인덱스 사용
+    # 인덱스 정렬 없이 매핑하기 위해 잠시 정렬
     df_sorted = df.sort_index()
     weekly_data_sorted = weekly_data.sort_index()
     
-    # 금요일 값을 다음주로 확장
     weekly_expanded = weekly_data_sorted.reindex(df_sorted.index, method='ffill').shift(1)
     
-    # 원래 df 순서에 맞춰서 값 넣기 (인덱스 기준 매핑)
-    df['Basis_Disp'] = weekly_expanded['Disp_Fri']
+    # 원래 df에 매핑
+    df['Basis_Disp'] = weekly_expanded['Disp_Fri'].fillna(0)
     
-    # [로그용]
-    df['Log_Ref_Date'] = weekly_data_sorted.index.to_series().reindex(df_sorted.index, method='ffill').shift(1)
-    df['Log_QQQ_Fri']  = weekly_expanded['QQQ_Fri']
-    df['Log_MA_Fri']   = weekly_expanded['MA_Fri']
+    # [로그용 데이터 매핑]
+    df['Log_Ref_Date']    = weekly_data_sorted.index.to_series().reindex(df_sorted.index, method='ffill').shift(1)
+    df['Log_QQQ_Fri']     = weekly_expanded['QQQ_Fri']
+    df['Log_MA_Fri']      = weekly_expanded['MA_Fri']
     
-    # 빈 곳 채우기 (앞부분 등)
-    df['Basis_Disp'] = df['Basis_Disp'].fillna(0)
+    # ★ 이 부분이 없어서 에러가 났었습니다. 다시 연결!
+    df['Log_Start_Price'] = weekly_expanded['Start_Price_Fri'] 
 
     # ------------------------------------------------------------------
 
     df['Prev_Close'] = df['SOXL'].shift(1)
     
+    # 날짜 필터링 (마지막엔 날짜 기준이 필요하므로 정렬)
     start_dt = pd.to_datetime(params['start_date'])
     end_dt = pd.to_datetime(params['end_date'])
     
-    # 마지막 필터링 때는 날짜 기준이 필요하므로 정렬해서 자름
     df = df.sort_index()
     df = df[(df.index >= start_dt) & (df.index <= end_dt + pd.Timedelta(days=1))].copy()
     
@@ -1067,6 +1062,7 @@ MY_BEST_PARAMS = {{
 else:
 
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
 
 
 
