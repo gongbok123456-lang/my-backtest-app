@@ -190,7 +190,7 @@ def backtest_engine_web(df, params):
     weekly_data.columns = ['QQQ_Fri', 'SMA_Fri', 'EMA_Fri']
     
     # 4. [이격도 계산] 금요일 기준 (일단 SMA 기준으로 계산)
-    weekly_data['Disp_Fri'] = (weekly_data['QQQ_Fri'] / weekly_data['EMA_Fri'] - 1) * 100
+    weekly_data['Disp_Fri'] = (weekly_data['QQQ_Fri'] / weekly_data['SMA_Fri'] - 1) * 100
     
     # 5. [전체 확장] 금요일 데이터를 다음주(월~금) 내내 적용
     # shift(1) : 금요일 확정된 값을 -> 다음주 월요일부터 참조
@@ -1043,6 +1043,7 @@ MY_BEST_PARAMS = {{
 else:
 
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
 
 
 
