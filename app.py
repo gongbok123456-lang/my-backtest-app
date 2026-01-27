@@ -171,40 +171,23 @@ def backtest_engine_web(df, params):
     df['QQQ'] = pd.to_numeric(df['QQQ'], errors='coerce')
     ma_win = int(params['ma_window'])
     
-    # 이평선 계산 (반올림 제거 - 구글시트 로직과 통일성 유지 권장, 필요시 .round(2) 추가)
+    # 이평선 계산
     df['MA_Daily'] = df['QQQ'].rolling(window=ma_win, min_periods=1).mean()
-    
     df['Log_Start_Price'] = df['QQQ'].shift(ma_win - 1)
+
     # ------------------------------------------------------------------
     # [3. 주간 데이터(Weekly) 추출 방식 개선] - 휴장일 대응 로직 적용
     # ------------------------------------------------------------------
-    
-    # (1) 주간 데이터 추출 (금요일 기준, 휴장시 직전일 데이터 사용)
-    # resample('W-FRI').last()는 금요일 데이터를 가져오되, 금요일이 없으면 그 주의 마지막(목/수) 데이터를 가져옵니다.
     weekly_resampled = df[['QQQ', 'MA_Daily', 'Log_Start_Price']].resample('W-FRI').last()
-    
-    # 컬럼명 변경
     weekly_resampled.columns = ['QQQ_Fri', 'MA_Fri', 'Start_Price_Fri']
-    
-    # (2) 이격도 계산 (주간 데이터 기준)
     weekly_resampled['Disp_Fri'] = weekly_resampled['QQQ_Fri'] / weekly_resampled['MA_Fri']
     
-    # (3) 데일리 데이터로 확장 (Mapping)
-    # 주간 데이터를 일별로 늘려서(ffill), 하루 뒤로 미룹니다(shift 1).
-    # '이번 주 월요일'은 '지난주 마지막장(금 or 목)'의 데이터를 참조하게 됩니다.
     daily_expanded = weekly_resampled.resample('D').ffill()
     daily_shifted = daily_expanded.shift(1)
-    
-    # (4) 원래 거래일(df.index)에 맞춰서 데이터를 매핑
     df_mapped = daily_shifted.reindex(df.index)
     
-    # 원래 df에 컬럼 매핑
-    df['Basis_Disp']      = df_mapped['Disp_Fri'].fillna(1.0) # 없으면 1.0(중립)
-    
-    # [로그용 데이터 매핑]
-    # 참조한 날짜(디버깅용)
+    df['Basis_Disp']      = df_mapped['Disp_Fri'].fillna(1.0)
     df['Log_Ref_Date']    = daily_shifted['QQQ_Fri'].reindex(df.index).index 
-    
     df['Log_QQQ_Fri']     = df_mapped['QQQ_Fri']
     df['Log_MA_Fri']      = df_mapped['MA_Fri']
     df['Log_Start_Price'] = df_mapped['Start_Price_Fri']
@@ -239,11 +222,14 @@ def backtest_engine_web(df, params):
     MAX_SLOTS = 10
     SEC_FEE = 0.0000278
 
-for i in range(len(df)):
+    # [수정] for문 앞에 공백 4칸을 추가하여 함수 내부로 들여쓰기 했습니다.
+    for i in range(len(df)):
         row = df.iloc[i]
         date = row.name
+        
         # [추가] 오늘 아침에 가진 돈을 기록해둡니다. (장중 매도로 늘어나도 이건 변하지 않음)
         start_cash = cash
+        
         today_close = row['SOXL']
         if pd.isna(today_close) or today_close <= 0: continue
         if params.get('force_round', True): 
@@ -299,8 +285,6 @@ for i in range(len(df)):
                 stock[1] = days
         
         # 2. 매수 로직
-        # [중요] 시드 갱신을 아직 하지 않았으므로, '어제까지의 시드'로 매수 금액을 계산합니다. (구글 시트 방식)
-        
         prev_c = row['Prev_Close'] if not pd.isna(row['Prev_Close']) else today_close
         if pd.isna(prev_c): prev_c = today_close
         
@@ -322,6 +306,8 @@ for i in range(len(df)):
                         weight_pct = 10.0
                 
                 target_seed = seed_equity * (weight_pct / 100.0)
+                
+                # [수정] 당일 매도로 생긴 현금(cash)이 아니라 아침 현금(start_cash) 한도 내에서만 배팅
                 bet = min(target_seed, start_cash)
                 
                 # [수수료 안전 마진] 수수료가 0이라도 수식은 유지 (안전성 확보)
@@ -347,7 +333,8 @@ for i in range(len(df)):
                     if real_qty > 0:
                         buy_amt = today_close * real_qty * (1 + params['fee_rate'])
                         cash -= buy_amt # 실제 돈은 줄어듭니다.
-                        # start_cash -= buy_amt (굳이 뺄 필요 없음, 어차피 하루에 한 번만 사니까요)
+                        # start_cash는 줄이지 않습니다 (하루 한 번 진입 규칙이 있다면)
+                        
                         holdings.append([today_close, 0, real_qty, phase, new_tier, dates[i]])
                         trade_log.append({
                             'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase, 
@@ -358,7 +345,6 @@ for i in range(len(df)):
                         })
         
         # 3. [위치 이동] 투자금(Seed Equity) 갱신
-        # 매수 로직이 끝난 후 갱신해야 구글 시트와 타이밍이 맞습니다. (779개 -> 778개로 교정됨)
         if daily_net_profit_sum != 0:
             rate = params['profit_rate'] if daily_net_profit_sum > 0 else params['loss_rate']
             seed_equity += daily_net_profit_sum * rate
@@ -372,6 +358,7 @@ for i in range(len(df)):
             'Holdings': len(holdings)
         })
 
+    # 여기 IndentationError가 났던 부분입니다. for문이 들여쓰기 되면 여기도 정상 작동합니다.
     if not daily_equity: return None
 
     final_equity = daily_equity[-1]
@@ -1039,6 +1026,7 @@ MY_BEST_PARAMS = {{
 else:
 
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
 
 
 
