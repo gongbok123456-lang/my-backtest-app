@@ -239,10 +239,11 @@ def backtest_engine_web(df, params):
     MAX_SLOTS = 10
     SEC_FEE = 0.0000278
 
-    for i in range(len(df)):
+for i in range(len(df)):
         row = df.iloc[i]
         date = row.name
-        
+        # [추가] 오늘 아침에 가진 돈을 기록해둡니다. (장중 매도로 늘어나도 이건 변하지 않음)
+        start_cash = cash
         today_close = row['SOXL']
         if pd.isna(today_close) or today_close <= 0: continue
         if params.get('force_round', True): 
@@ -321,7 +322,7 @@ def backtest_engine_web(df, params):
                         weight_pct = 10.0
                 
                 target_seed = seed_equity * (weight_pct / 100.0)
-                bet = min(target_seed, cash)
+                bet = min(target_seed, start_cash)
                 
                 # [수수료 안전 마진] 수수료가 0이라도 수식은 유지 (안전성 확보)
                 bet_net_fee = bet / (1 + params['fee_rate'])
@@ -339,8 +340,14 @@ def backtest_engine_web(df, params):
                             max_add_orders=int(params['add_order_cnt'])
                         )
                     
-                    max_buyable = int(cash / (today_close * (1 + params['fee_rate'])))
+                    # [수정] 최대 매수 가능 수량도 '아침 예수금' 기준으로 제한
+                    max_buyable = int(start_cash / (today_close * (1 + params['fee_rate']))) 
                     real_qty = min(final_qty, max_buyable)
+                    
+                    if real_qty > 0:
+                        buy_amt = today_close * real_qty * (1 + params['fee_rate'])
+                        cash -= buy_amt # 실제 돈은 줄어듭니다.
+                        # start_cash -= buy_amt (굳이 뺄 필요 없음, 어차피 하루에 한 번만 사니까요)
                     
                     if real_qty > 0:
                         buy_amt = today_close * real_qty * (1 + params['fee_rate'])
@@ -1036,6 +1043,7 @@ MY_BEST_PARAMS = {{
 else:
 
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
 
 
 
