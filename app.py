@@ -175,25 +175,39 @@ def backtest_engine_web(df, params):
     df['MA_Daily'] = df['QQQ'].rolling(window=ma_win, min_periods=1).mean()
     
     df['Log_Start_Price'] = df['QQQ'].shift(ma_win - 1)
-    df['Weekday'] = df.index.dayofweek
-    weekly_data = df[df['Weekday'] == 4].copy()
+    # ------------------------------------------------------------------
+    # [3. 주간 데이터(Weekly) 추출 방식 개선] - 휴장일 대응 로직 적용
+    # ------------------------------------------------------------------
     
-    weekly_data = weekly_data[['QQQ', 'MA_Daily', 'Log_Start_Price']]
-    weekly_data.columns = ['QQQ_Fri', 'MA_Fri', 'Start_Price_Fri']
+    # (1) 주간 데이터 추출 (금요일 기준, 휴장시 직전일 데이터 사용)
+    # resample('W-FRI').last()는 금요일 데이터를 가져오되, 금요일이 없으면 그 주의 마지막(목/수) 데이터를 가져옵니다.
+    weekly_resampled = df[['QQQ', 'MA_Daily', 'Log_Start_Price']].resample('W-FRI').last()
     
-    # [수정] 이격도 계산 (퍼센트가 아닌 비율 Ratio 방식)
-    weekly_data['Disp_Fri'] = weekly_data['QQQ_Fri'] / weekly_data['MA_Fri']
+    # 컬럼명 변경
+    weekly_resampled.columns = ['QQQ_Fri', 'MA_Fri', 'Start_Price_Fri']
     
-    df_sorted = df.sort_index()
-    weekly_data_sorted = weekly_data.sort_index()
-    weekly_expanded = weekly_data_sorted.reindex(df_sorted.index, method='ffill').shift(1)
+    # (2) 이격도 계산 (주간 데이터 기준)
+    weekly_resampled['Disp_Fri'] = weekly_resampled['QQQ_Fri'] / weekly_resampled['MA_Fri']
     
-    df['Basis_Disp'] = weekly_expanded['Disp_Fri'].fillna(1.0)
-    df['Log_Ref_Date']    = weekly_data_sorted.index.to_series().reindex(df_sorted.index, method='ffill').shift(1)
-    df['Log_QQQ_Fri']     = weekly_expanded['QQQ_Fri']
-    df['Log_MA_Fri']      = weekly_expanded['MA_Fri']
-    df['Log_Start_Price'] = weekly_expanded['Start_Price_Fri'] 
-
+    # (3) 데일리 데이터로 확장 (Mapping)
+    # 주간 데이터를 일별로 늘려서(ffill), 하루 뒤로 미룹니다(shift 1).
+    # '이번 주 월요일'은 '지난주 마지막장(금 or 목)'의 데이터를 참조하게 됩니다.
+    daily_expanded = weekly_resampled.resample('D').ffill()
+    daily_shifted = daily_expanded.shift(1)
+    
+    # (4) 원래 거래일(df.index)에 맞춰서 데이터를 매핑
+    df_mapped = daily_shifted.reindex(df.index)
+    
+    # 원래 df에 컬럼 매핑
+    df['Basis_Disp']      = df_mapped['Disp_Fri'].fillna(1.0) # 없으면 1.0(중립)
+    
+    # [로그용 데이터 매핑]
+    # 참조한 날짜(디버깅용)
+    df['Log_Ref_Date']    = daily_shifted['QQQ_Fri'].reindex(df.index).index 
+    
+    df['Log_QQQ_Fri']     = df_mapped['QQQ_Fri']
+    df['Log_MA_Fri']      = df_mapped['MA_Fri']
+    df['Log_Start_Price'] = df_mapped['Start_Price_Fri']
     df['Prev_Close'] = df['SOXL'].shift(1)
     
     start_dt = pd.to_datetime(params['start_date'])
@@ -1022,6 +1036,7 @@ MY_BEST_PARAMS = {{
 else:
 
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
 
 
 
