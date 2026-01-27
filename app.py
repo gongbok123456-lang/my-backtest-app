@@ -198,7 +198,7 @@ def backtest_engine_web(df, params):
     weekly_data.columns = ['QQQ_Fri', 'MA_Fri', 'Start_Price_Fri']
     
     # 4. 이격도 계산
-    weekly_data['Disp_Fri'] = (weekly_data['QQQ_Fri'] / weekly_data['MA_Fri'] - 1) * 100
+    weekly_data['Disp_Fri'] = weekly_data['QQQ_Fri'] / weekly_data['MA_Fri']
     
     # 5. 전체 확장 (Shift 1)
     # 인덱스 정렬 없이 매핑하기 위해 잠시 정렬
@@ -208,7 +208,7 @@ def backtest_engine_web(df, params):
     weekly_expanded = weekly_data_sorted.reindex(df_sorted.index, method='ffill').shift(1)
     
     # 원래 df에 매핑
-    df['Basis_Disp'] = weekly_expanded['Disp_Fri'].fillna(0)
+    df['Basis_Disp'] = weekly_expanded['Disp_Fri'].fillna(1.0)
     
     # [로그용 데이터 매핑]
     df['Log_Ref_Date']    = weekly_data_sorted.index.to_series().reindex(df_sorted.index, method='ffill').shift(1)
@@ -1065,6 +1065,7 @@ MY_BEST_PARAMS = {{
 else:
 
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
 
 
 
