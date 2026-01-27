@@ -348,10 +348,6 @@ for i in range(len(df)):
                         buy_amt = today_close * real_qty * (1 + params['fee_rate'])
                         cash -= buy_amt # 실제 돈은 줄어듭니다.
                         # start_cash -= buy_amt (굳이 뺄 필요 없음, 어차피 하루에 한 번만 사니까요)
-                    
-                    if real_qty > 0:
-                        buy_amt = today_close * real_qty * (1 + params['fee_rate'])
-                        cash -= buy_amt
                         holdings.append([today_close, 0, real_qty, phase, new_tier, dates[i]])
                         trade_log.append({
                             'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase, 
@@ -1043,6 +1039,7 @@ MY_BEST_PARAMS = {{
 else:
 
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
 
 
 
