@@ -161,75 +161,45 @@ def calculate_loc_quantity(seed_amount, order_price, close_price, buy_range, max
 
     return final_qty
 
-# --- [백테스트 엔진] ---
+# [백테스트 엔진] 수정본
 def backtest_engine_web(df, params):
     df = df.copy()
     
     # ------------------------------------------------------------------
-    # [최종 수정] "있는 그대로" 순서 존중 + 디버깅 컬럼 복구
+    # [데이터 전처리]
     # ------------------------------------------------------------------
-    
-    # 1. 정렬/중복제거 코드 삭제 (구글 시트 행 순서 100% 신뢰)
-    # (df = df.sort_index() ... 삭제함)
-    
-    # QQQ 숫자 변환 (안전장치)
     df['QQQ'] = pd.to_numeric(df['QQQ'], errors='coerce')
+    ma_win = int(params['ma_window'])
     
-    # 2. 거래일 기준 200 단순이평 (SMA) -> 반올림
-    ma_win = int(params['ma_window']) # 200
+    # 이평선 계산 (반올림 제거 - 구글시트 로직과 통일성 유지 권장, 필요시 .round(2) 추가)
+    df['MA_Daily'] = df['QQQ'].rolling(window=ma_win, min_periods=1).mean()
     
-    # 데이터 순서대로 200개씩 묶어서 평균 (min_periods=1 유지)
-    df['MA_Daily'] = df['QQQ'].rolling(window=ma_win, min_periods=1).mean().round(2)
-    
-    # ★ [오류 수정] 로그에 찍을 '200일 전 가격' 컬럼 생성
-    # 현재 행을 기준으로 199번째 전(Start Point)의 가격을 가져옵니다.
     df['Log_Start_Price'] = df['QQQ'].shift(ma_win - 1)
-    
-    # 3. 금요일 스냅샷 추출
-    # 요일 정보로 필터링 (0=월...4=금)
     df['Weekday'] = df.index.dayofweek
-    
-    # 금요일(4)인 행만 추출
-    # (주의: 여기에 Log_Start_Price도 같이 가져가야 합니다!)
     weekly_data = df[df['Weekday'] == 4].copy()
     
-    # 필요한 값만 남기기
     weekly_data = weekly_data[['QQQ', 'MA_Daily', 'Log_Start_Price']]
     weekly_data.columns = ['QQQ_Fri', 'MA_Fri', 'Start_Price_Fri']
     
-    # 4. 이격도 계산
+    # [수정] 이격도 계산 (퍼센트가 아닌 비율 Ratio 방식)
     weekly_data['Disp_Fri'] = weekly_data['QQQ_Fri'] / weekly_data['MA_Fri']
     
-    # 5. 전체 확장 (Shift 1)
-    # 인덱스 정렬 없이 매핑하기 위해 잠시 정렬
     df_sorted = df.sort_index()
     weekly_data_sorted = weekly_data.sort_index()
-    
     weekly_expanded = weekly_data_sorted.reindex(df_sorted.index, method='ffill').shift(1)
     
-    # 원래 df에 매핑
     df['Basis_Disp'] = weekly_expanded['Disp_Fri'].fillna(1.0)
-    
-    # [로그용 데이터 매핑]
     df['Log_Ref_Date']    = weekly_data_sorted.index.to_series().reindex(df_sorted.index, method='ffill').shift(1)
     df['Log_QQQ_Fri']     = weekly_expanded['QQQ_Fri']
     df['Log_MA_Fri']      = weekly_expanded['MA_Fri']
-    
-    # ★ 이 부분이 없어서 에러가 났었습니다. 다시 연결!
     df['Log_Start_Price'] = weekly_expanded['Start_Price_Fri'] 
-
-    # ------------------------------------------------------------------
 
     df['Prev_Close'] = df['SOXL'].shift(1)
     
-    # 날짜 필터링 (마지막엔 날짜 기준이 필요하므로 정렬)
     start_dt = pd.to_datetime(params['start_date'])
     end_dt = pd.to_datetime(params['end_date'])
-    
     df = df.sort_index()
     df = df[(df.index >= start_dt) & (df.index <= end_dt + pd.Timedelta(days=1))].copy()
-
-    # ★ [추가할 코드] 실제 매매는 SOXL이 있어야 하므로, 계산 끝난 후 여기서 제거
     df = df.dropna(subset=['SOXL'])  
 
     if len(df) == 0: return None
@@ -259,33 +229,22 @@ def backtest_engine_web(df, params):
         row = df.iloc[i]
         date = row.name
         
-        # 1. 변수명 통일 (사용자님 코드 + 진단 코드 호환)
         today_close = row['SOXL']
-        price = today_close  # price 변수 생성
-        
-        # 데이터 유효성 체크
         if pd.isna(today_close) or today_close <= 0: continue
         if params.get('force_round', True): 
             today_close = round(today_close, 2)
-            price = today_close 
-
-        # 2. 이격도(disp) 가져오기
-        disp = row['Basis_Disp'] if not pd.isna(row['Basis_Disp']) else 0.0
         
-        # 3. 구간(Phase) 판단 (params 기준)
-        # (만약 strategy 변수를 쓰신다면 이 부분을 사용자님 코드에 맞게 수정이 필요할 수 있습니다)
-        # 여기서는 params를 기준으로 안전하게 작성했습니다.
+        disp = row['Basis_Disp'] if not pd.isna(row['Basis_Disp']) else 1.0
+        
         if disp < params['bt_cond']: phase = 'Bottom'
         elif disp > params['cl_cond']: phase = 'Ceiling'
         else: phase = 'Middle'
 
         conf = strategy[phase]
-        #target_seed_float = seed_equity / MAX_SLOTS
-        #target_seed = int(target_seed_float + 0.5)
-
         tiers_sold = set()
         daily_net_profit_sum = 0
         
+        # 1. 매도 로직
         for stock in holdings[:]:
             buy_p, days, qty, mode, tier, buy_dt = stock
             s_conf = strategy[mode]
@@ -307,45 +266,39 @@ def backtest_engine_web(df, params):
                 net_receive = sell_amt * (1 - params['fee_rate']) - sec_fee_val
                 buy_cost = (buy_p * qty) * (1 + params['fee_rate'])
                 real_profit = round(net_receive - buy_cost, 2)
+                
+                # 순수익 합산 (투자금 갱신은 매수 이후로 미룸)
                 daily_net_profit_sum += real_profit
                 cash += net_receive
+                
                 trade_count += 1
                 if real_profit > 0: win_count += 1
                 trade_log.append({
-                'Date': dates[i], 'Type': 'Sell', 'Tier': tier, 'Phase': mode, 'Ref_Date': row['Log_Ref_Date'].strftime('%Y-%m-%d') if pd.notnull(row['Log_Ref_Date']) else '-',
-                'QQQ_Fri': row['Log_QQQ_Fri'],
-                'MA_Calc': row['Log_MA_Fri'], 'Disp': disp, 'QQQ_Fri': row['Log_QQQ_Fri'],     # 1. 1월 2일의 QQQ 가격 (613.12 인지 확인)
-                'Start_P': row['Log_Start_Price'], # 2. 200일 전(시작점) QQQ 가격
-                'MA_Calc': row['Log_MA_Fri'],
-                'Price': today_close, 'Qty': qty, 'Profit': real_profit, 'Reason': reason
+                    'Date': dates[i], 'Type': 'Sell', 'Tier': tier, 'Phase': mode, 
+                    'Ref_Date': row['Log_Ref_Date'].strftime('%Y-%m-%d') if pd.notnull(row['Log_Ref_Date']) else '-',
+                    'QQQ_Fri': row['Log_QQQ_Fri'], 'MA_Calc': row['Log_MA_Fri'], 'Disp': disp,
+                    'Start_P': row['Log_Start_Price'], 'Price': today_close, 'Qty': qty, 
+                    'Profit': real_profit, 'Reason': reason
                 })
             else:
                 stock[1] = days
         
-        if daily_net_profit_sum != 0:
-            rate = params['profit_rate'] if daily_net_profit_sum > 0 else params['loss_rate']
-            seed_equity += daily_net_profit_sum * rate
-            
-        # [백테스트 엔진 내부: 매도 로직이 끝난 직후]
+        # 2. 매수 로직
+        # [중요] 시드 갱신을 아직 하지 않았으므로, '어제까지의 시드'로 매수 금액을 계산합니다. (구글 시트 방식)
         
-        # 1. 전일 종가 및 매수 타겟가 계산
         prev_c = row['Prev_Close'] if not pd.isna(row['Prev_Close']) else today_close
         if pd.isna(prev_c): prev_c = today_close
+        
+        # [중요] 매수 목표가 반올림 적용 (776개 -> 779개로 교정됨)
         target_p = excel_round_down(prev_c * (1 + conf['buy'] / 100), 2)
         
-        # 2. [수정됨] 매수 조건 체크 및 시드 계산
-        # 기존에는 여기서 bet을 미리 계산했지만, 이제는 티어를 먼저 확인해야 함
         if today_close <= target_p and len(holdings) < MAX_SLOTS:
-            
-            # (1) 들어갈 티어(New Tier) 먼저 탐색
             curr_tiers = {h[4] for h in holdings}
             unavail = curr_tiers.union(tiers_sold)
             new_tier = 1
             while new_tier in unavail: new_tier += 1
             
             if new_tier <= MAX_SLOTS:
-                # (2) 티어별 비중(%) 가져오기
-                # params에 'tier_weights'가 있으면 표 값을 쓰고, 없으면 10% 기본값
                 weight_pct = 10.0
                 if 'tier_weights' in params:
                     try:
@@ -353,19 +306,19 @@ def backtest_engine_web(df, params):
                     except:
                         weight_pct = 10.0
                 
-                # (3) 시드 계산 (총 자산 * 비중%)
                 target_seed = seed_equity * (weight_pct / 100.0)
-                
-                # (4) 실제 배팅액 결정 (현금 범위 내)
                 bet = min(target_seed, cash)
                 
-                if bet >= 10: # 최소 주문 금액 체크
+                # [수수료 안전 마진] 수수료가 0이라도 수식은 유지 (안전성 확보)
+                bet_net_fee = bet / (1 + params['fee_rate'])
+                
+                if bet >= 10:
                     final_qty = 0
                     if new_tier == MAX_SLOTS:
-                        final_qty = int(bet / target_p)
+                        final_qty = int(bet_net_fee / target_p)
                     else:
                         final_qty = calculate_loc_quantity(
-                            seed_amount=bet,
+                            seed_amount=bet_net_fee,
                             order_price=target_p,
                             close_price=today_close,
                             buy_range= -1 * (params['loc_range'] / 100.0),
@@ -380,14 +333,18 @@ def backtest_engine_web(df, params):
                         cash -= buy_amt
                         holdings.append([today_close, 0, real_qty, phase, new_tier, dates[i]])
                         trade_log.append({
-                            'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase, 'Ref_Date': row['Log_Ref_Date'].strftime('%Y-%m-%d') if pd.notnull(row['Log_Ref_Date']) else '-',
-                            'QQQ_Fri': row['Log_QQQ_Fri'],
-                            'MA_Calc': row['Log_MA_Fri'], 
-							'Disp': disp, 'QQQ_Fri': row['Log_QQQ_Fri'],     # 1. 1월 2일의 QQQ 가격 (613.12 인지 확인)
-                            'Start_P': row['Log_Start_Price'], # 2. 200일 전(시작점) QQQ 가격
-                            'MA_Calc': row['Log_MA_Fri'],
-                            'Price': today_close, 'Qty': real_qty, 'Profit': 0, 'Reason': 'LOC'
+                            'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase, 
+                            'Ref_Date': row['Log_Ref_Date'].strftime('%Y-%m-%d') if pd.notnull(row['Log_Ref_Date']) else '-',
+                            'QQQ_Fri': row['Log_QQQ_Fri'], 'MA_Calc': row['Log_MA_Fri'], 'Disp': disp,
+                            'Start_P': row['Log_Start_Price'], 'Price': today_close, 'Qty': real_qty, 
+                            'Profit': 0, 'Reason': 'LOC'
                         })
+        
+        # 3. [위치 이동] 투자금(Seed Equity) 갱신
+        # 매수 로직이 끝난 후 갱신해야 구글 시트와 타이밍이 맞습니다. (779개 -> 778개로 교정됨)
+        if daily_net_profit_sum != 0:
+            rate = params['profit_rate'] if daily_net_profit_sum > 0 else params['loss_rate']
+            seed_equity += daily_net_profit_sum * rate
         
         current_eq = cash + sum([h[2]*today_close for h in holdings])
         daily_equity.append(current_eq)
@@ -428,7 +385,7 @@ def backtest_engine_web(df, params):
         'Params': params,
         'TradeLog': pd.DataFrame(trade_log),
         'DailyLog': pd.DataFrame(daily_log),
-	'CurrentHoldings': holdings,  # <--- 이 줄을 꼭 추가해주세요! (현재 보유 종목 리스트)
+	    'CurrentHoldings': holdings,
         'LastData': df.iloc[-1]
     }
 
@@ -1065,6 +1022,7 @@ MY_BEST_PARAMS = {{
 else:
 
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
 
 
 
