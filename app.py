@@ -109,6 +109,43 @@ def load_data_from_gsheet(url):
         st.error(f"구글 시트 로드 실패: {e}")
         return None
 
+# --- [구글 시트로 주문 데이터 전송 함수] ---
+def send_orders_to_gsheet(orders_df, sheet_url, worksheet_name="HTS주문"):
+    """
+    매수/매도 주문 데이터를 구글시트로 전송
+    HTS 자동화에서 이 시트를 읽어 주문 실행
+    """
+    try:
+        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        
+        if "private_key" in creds_dict:
+            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+            
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        client = gspread.authorize(creds)
+        
+        sheet = client.open_by_url(sheet_url)
+        
+        # 워크시트 찾기 또는 생성
+        try:
+            worksheet = sheet.worksheet(worksheet_name)
+        except gspread.WorksheetNotFound:
+            worksheet = sheet.add_worksheet(title=worksheet_name, rows=100, cols=10)
+        
+        # 기존 데이터 클리어
+        worksheet.clear()
+        
+        # 헤더 및 데이터 업데이트
+        if not orders_df.empty:
+            worksheet.update([orders_df.columns.tolist()] + orders_df.values.tolist())
+        
+        return True
+    except Exception as e:
+        st.error(f"구글 시트 전송 실패: {e}")
+        return False
+
+
 # --- [유틸리티 함수] ---
 def excel_round_up(n, decimals=0):
     if pd.isna(n) or n == np.inf or n == -np.inf: return 0
@@ -479,8 +516,10 @@ if sheet_url:
             
             col_stable, col_agg = st.columns(2)
             
-            # --- 대시보드 출력용 함수 ---
-            def render_dashboard(col, p_params, strategy_name):
+            # --- 대시보드 출력용 함수 (주문 데이터 반환) ---
+            def render_dashboard(col, p_params, strategy_name, stock_name="SOXL"):
+                hts_orders = []  # HTS 전송용 주문 리스트
+                
                 with col:
                     st.subheader(f"{strategy_name}")
                     
@@ -488,7 +527,7 @@ if sheet_url:
                     res = backtest_engine_web(df, p_params)
                     if not res:
                         st.error("데이터 부족 (기간 확인)")
-                        return
+                        return hts_orders
 
                     last_row = res['LastData']
                     daily_last = res['DailyLog'].iloc[-1]
@@ -626,6 +665,15 @@ if sheet_url:
                                 "주문가격": order_price,
                                 "비고": note
                             })
+                            
+                            # HTS 전송용 데이터 수집
+                            hts_orders.append({
+                                "종목": stock_name,
+                                "주문유형": "매도",
+                                "주문타입": "MOC" if "MOC" in order_type else "LOC",
+                                "가격": target_sell_p if "LOC" in order_type else 0,
+                                "수량": qty
+                            })
                         
                         # 스타일링 함수 (타임컷 빨간색 강조)
                         def highlight_moc(row):
@@ -634,9 +682,41 @@ if sheet_url:
                             return [''] * len(row)
 
                         st.dataframe(pd.DataFrame(sell_list).style.apply(highlight_moc, axis=1), hide_index=True, use_container_width=True)
+                    
+                    # 매수 주문도 HTS 데이터에 추가
+                    if buy_list:
+                        for b in buy_list:
+                            if b["상태"] == "주문가능":
+                                hts_orders.append({
+                                    "종목": stock_name,
+                                    "주문유형": "매수",
+                                    "주문타입": "LOC",
+                                    "가격": float(b["가격 ($)"]),
+                                    "수량": int(b["수량"])
+                                })
+                
+                return hts_orders
 
-            render_dashboard(col_stable, params_s, "🛡️ 안정형 전략")
-            render_dashboard(col_agg, params_a, "🔥 공격형 전략")
+            orders_stable = render_dashboard(col_stable, params_s, "🛡️ 안정형 전략")
+            orders_agg = render_dashboard(col_agg, params_a, "🔥 공격형 전략")
+            
+            # HTS 전송 버튼
+            st.divider()
+            st.subheader("📤 HTS 자동화 연동")
+            
+            all_orders = orders_stable + orders_agg
+            if all_orders:
+                orders_df = pd.DataFrame(all_orders)
+                st.dataframe(orders_df, hide_index=True, use_container_width=True)
+                
+                if st.button("🚀 HTS 주문 데이터 전송", type="primary"):
+                    if send_orders_to_gsheet(orders_df, sheet_url, "HTS주문"):
+                        st.success("✅ 구글시트로 주문 데이터가 전송되었습니다!")
+                        st.info(f"📋 시트 URL: {sheet_url}\n📊 워크시트: HTS주문")
+                    else:
+                        st.error("❌ 전송 실패")
+            else:
+                st.caption("전송할 주문 데이터가 없습니다.")
 
 
         # ==========================================
