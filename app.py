@@ -544,7 +544,8 @@ if sheet_url:
                                     orders.append({'price': next_p, 'qty': fix_qty, 'type': 'ADD'})
                         return orders
 
-                    # [A] 신규 진입 출력
+                    # [A] 매수 주문 (Buy Orders)
+                    st.markdown("#### 🛒 매수 주문 (Buy Orders)")
                     if len(current_holdings) < 10:
                         st.info(f"🆕 **신규 진입 (Tier {next_tier})**")
                         real_bet = min(one_time_seed, current_cash)
@@ -565,28 +566,49 @@ if sheet_url:
                                 st.caption(f"현금부족 (${o['price']})")
                         st.caption(f"(예상 투입: ${total_est:,.0f})")
                     else:
-                        st.warning("슬롯 꽉 참")
+                        st.warning("🚫 슬롯이 꽉 찼습니다 (추가 매수 불가)")
                     
-                    # [B] 보유 종목 출력
-                    if current_holdings:
-                        with st.expander(f"보유 종목 ({len(current_holdings)}개) & 추가매수"):
-                            for h in current_holdings:
-                                buy_p, days, qty, mode, tier, _ = h
-                                st.markdown(f"**T{tier}** (${buy_p}) - {days}일차")
+                    st.divider()
+
+                    # [B] 매도 주문 (Sell Orders)
+                    st.markdown("#### 💰 매도 주문 (Sell Orders)")
+                    if not current_holdings:
+                        st.caption("보유 중인 종목이 없습니다.")
+                    else:
+                        for h in current_holdings:
+                            # h = [buy_p, days, qty, mode, tier, buy_dt]
+                            buy_p, days, qty, mode, tier, buy_dt = h
+                            
+                            # 모드별 설정 가져오기
+                            if mode == 'Bottom': 
+                                prof_rate = p_params['bt_prof']
+                                time_limit = p_params['bt_time']
+                            elif mode == 'Ceiling': 
+                                prof_rate = p_params['cl_prof']
+                                time_limit = p_params['cl_time']
+                            else: 
+                                prof_rate = p_params['md_prof']
+                                time_limit = p_params['md_time']
+                            
+                            target_sell_p = excel_round_up(buy_p * (1 + prof_rate), 2)
+                            curr_return = (last_row['SOXL'] - buy_p) / buy_p * 100
+                            
+                            # 오늘 기준 보유일수 = 현재 보유일 + 1
+                            current_hold_days = days + 1
+                            
+                            with st.container(border=True):
+                                c1, c2 = st.columns([2, 1])
+                                c1.markdown(f"**Tier {tier}** ({mode})")
+                                c1.caption(f"평단: ${buy_p} | 수량: {qty}개 | 수익률: {curr_return:.2f}%")
                                 
-                                real_bet_add = min(one_time_seed, current_cash)
-                                net_bet_add = real_bet_add / (1 + p_params['fee_rate'])
-                                orders = get_smart_orders(net_bet_add, loc_price, -1*(loc_range/100.0), n_split)
-                                rem_cash = current_cash
-                                has_order = False
-                                for o in orders:
-                                    cost = o['price']*o['qty']
-                                    icon = "💧" if o['price'] < buy_p else "🔥"
-                                    if rem_cash >= cost:
-                                        st.write(f"{icon} ${o['price']} × {o['qty']}개")
-                                        has_order = True
-                                if not has_order: st.caption("주문 불가")
-                                st.divider()
+                                # 타임컷 경고 (존버일 초과 시)
+                                if current_hold_days >= time_limit:
+                                    st.error(f"🚨 **TimeCut 발동! ({current_hold_days}/{time_limit}일)**")
+                                    st.markdown(f"👉 **시장가/LOC 매도 요망**")
+                                else:
+                                    st.success(f"🎯 **지정가 매도 주문**")
+                                    st.markdown(f"가격: **${target_sell_p}**")
+                                    st.caption(f"존버: {current_hold_days}/{time_limit}일")
 
             render_dashboard(col_stable, params_s, "🛡️ 안정형 전략")
             render_dashboard(col_agg, params_a, "🔥 공격형 전략")
@@ -619,7 +641,7 @@ if sheet_url:
                     }
                     st.table(pd.DataFrame(comp_data).set_index('구분'))
                     
-                    # 2. 그래프 겹쳐 그리기
+                    # 2. 그래프 겹쳐 그리기 (기간이 달라도 날짜축 기준으로 자동 매핑됨)
                     st.subheader("📈 자산 성장 곡선 비교")
                     chart_df = pd.DataFrame({
                         'Stable': res_s['Series'],
