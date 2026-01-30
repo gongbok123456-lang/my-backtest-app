@@ -424,13 +424,13 @@ with st.sidebar:
     st.header("⚙️ 기본 데이터 연동")
     sheet_url = st.text_input("🔗 주가 데이터 시트 (읽기)", value=DEFAULT_SHEET_URL)
     
-    # [초기 실행 시 설정 로드]
-    if sheet_url:
-        load_settings_from_gsheet(sheet_url)
-
     st.markdown("---")
     st.header("📤 HTS 주문 전송 설정")
     order_sheet_url = st.text_input("🔗 주문 전송 시트 (쓰기)", value=DEFAULT_ORDER_URL, placeholder="구글시트 URL 입력")
+    
+    # [설정 로드 - 쓰기 가능한 주문 시트 사용]
+    if order_sheet_url:
+        load_settings_from_gsheet(order_sheet_url)
     
     st.markdown("---")
     st.header("⚔️ 전략별 상세 설정")
@@ -519,10 +519,10 @@ with st.sidebar:
     
     st.markdown("---")
     if st.button("💾 현재 설정 저장하기", type="primary", use_container_width=True):
-        if sheet_url:
-            save_settings_to_gsheet(sheet_url)
+        if order_sheet_url:
+            save_settings_to_gsheet(order_sheet_url)
         else:
-            st.error("구글 시트 URL을 먼저 입력해주세요.")
+            st.error("주문 전송 시트 URL을 먼저 입력해주세요.")
 
 
 if sheet_url:
@@ -721,4 +721,3 @@ if sheet_url:
 
 else:
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
-
