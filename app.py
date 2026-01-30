@@ -666,8 +666,9 @@ if sheet_url:
                                 "비고": note
                             })
                             
-                            # HTS 전송용 데이터 수집
+                            # HTS 전송용 데이터 수집 (전략 구분 추가)
                             hts_orders.append({
+                                "전략": strategy_name,
                                 "종목": stock_name,
                                 "주문유형": "매도",
                                 "주문타입": "MOC" if "MOC" in order_type else "LOC",
@@ -683,11 +684,12 @@ if sheet_url:
 
                         st.dataframe(pd.DataFrame(sell_list).style.apply(highlight_moc, axis=1), hide_index=True, use_container_width=True)
                     
-                    # 매수 주문도 HTS 데이터에 추가
+                    # 매수 주문도 HTS 데이터에 추가 (전략 구분 추가)
                     if buy_list:
                         for b in buy_list:
                             if b["상태"] == "주문가능":
                                 hts_orders.append({
+                                    "전략": strategy_name,
                                     "종목": stock_name,
                                     "주문유형": "매수",
                                     "주문타입": "LOC",
@@ -700,21 +702,66 @@ if sheet_url:
             orders_stable = render_dashboard(col_stable, params_s, "🛡️ 안정형 전략")
             orders_agg = render_dashboard(col_agg, params_a, "🔥 공격형 전략")
             
-            # HTS 전송 버튼
+            # HTS 전송 섹션
             st.divider()
             st.subheader("📤 HTS 자동화 연동")
             
+            # 안정형/공격형 분리 표시
+            col_hts1, col_hts2 = st.columns(2)
+            
+            with col_hts1:
+                st.markdown("#### 🛡️ 안정형 (탭1)")
+                if orders_stable:
+                    df_stable = pd.DataFrame(orders_stable)
+                    st.dataframe(df_stable, hide_index=True, use_container_width=True)
+                else:
+                    st.caption("주문 없음")
+            
+            with col_hts2:
+                st.markdown("#### 🔥 공격형 (탭2)")
+                if orders_agg:
+                    df_agg = pd.DataFrame(orders_agg)
+                    st.dataframe(df_agg, hide_index=True, use_container_width=True)
+                else:
+                    st.caption("주문 없음")
+            
+            st.divider()
+            
+            # 전송 옵션
             all_orders = orders_stable + orders_agg
             if all_orders:
                 orders_df = pd.DataFrame(all_orders)
-                st.dataframe(orders_df, hide_index=True, use_container_width=True)
                 
-                if st.button("🚀 HTS 주문 데이터 전송", type="primary"):
-                    if send_orders_to_gsheet(orders_df, sheet_url, "HTS주문"):
-                        st.success("✅ 구글시트로 주문 데이터가 전송되었습니다!")
-                        st.info(f"📋 시트 URL: {sheet_url}\n📊 워크시트: HTS주문")
+                col_btn1, col_btn2 = st.columns(2)
+                
+                with col_btn1:
+                    if st.button("🚀 지금 전송", type="primary", use_container_width=True):
+                        if send_orders_to_gsheet(orders_df, sheet_url, "HTS주문"):
+                            st.success("✅ 전송 완료!")
+                        else:
+                            st.error("❌ 전송 실패 (권한 확인 필요)")
+                
+                with col_btn2:
+                    # 자동 전송 시간 설정
+                    auto_time = st.time_input("⏰ 자동 전송 시간", value=datetime.time(22, 30))
+                    
+                    # 현재 시간과 비교하여 자동 전송
+                    now = datetime.datetime.now().time()
+                    if 'last_auto_send' not in st.session_state:
+                        st.session_state.last_auto_send = None
+                    
+                    today_str = datetime.date.today().isoformat()
+                    
+                    # 오늘 이미 전송했는지 확인
+                    if st.session_state.last_auto_send == today_str:
+                        st.info(f"✅ 오늘 {auto_time} 자동 전송 완료")
+                    elif now >= auto_time:
+                        # 자동 전송 실행
+                        if send_orders_to_gsheet(orders_df, sheet_url, "HTS주문"):
+                            st.session_state.last_auto_send = today_str
+                            st.success(f"⏰ {auto_time} 자동 전송 완료!")
                     else:
-                        st.error("❌ 전송 실패")
+                        st.caption(f"⏳ {auto_time}에 자동 전송 예정")
             else:
                 st.caption("전송할 주문 데이터가 없습니다.")
 
