@@ -394,151 +394,284 @@ def backtest_engine_web(df, params):
     }
 
 # --- [UI 구성] ---
-st.title("📊 쪼꼬야옹 백테스트 연구소")
+# ... (위쪽의 backtest_engine_web 함수까지는 그대로 두세요) ...
 
+# --- [UI 구성] ---
+st.title("📊 쪼꼬야옹의 듀얼 전략 연구소")
+
+# 전역 설정 (시트 주소와 수수료는 공통으로 유지 - 필요시 이것도 분리 가능)
 with st.sidebar:
-    st.header("⚙️ 기본 설정")
-    sheet_url = st.text_input("🔗 구글 시트 주소 (URL)", value=DEFAULT_SHEET_URL)
+    st.header("⚙️ 기본 데이터 연동")
+    sheet_url = st.text_input("🔗 구글 시트 주소", value=DEFAULT_SHEET_URL)
     st.caption("※ 시트에 'Date', 'SOXL', 'QQQ' 데이터가 있어야 합니다.")
-    st.subheader("💰 자산 및 복리 설정")
-    balance = st.number_input("초기 자본 ($)", value=10000)
-    fee = st.number_input("수수료 (%)", value=0.07)
-    profit_rate = st.slider("이익 복리율 (%)", 0, 100, 70)
-    loss_rate = st.slider("손실 복리율 (%)", 0, 100, 50)
-    st.subheader("📥 LOC 설정")
-    add_order_cnt = st.number_input("추가 주문 횟수", value=4, min_value=1) 
-    loc_range = st.number_input("하단 범위 (-%)", value=20.0, min_value=0.0) 
-    st.subheader("📈 기간 설정")
-    
-    # 1. 오늘 날짜를 구합니다.
-    today = datetime.date.today()
-    
-    # 2. 시작일 설정
-    # value: 기본값 (2010년 1월 1일로 설정 - 원하시는 대로 수정 가능)
-    # max_value: 오늘 이후로는 선택 못하게 막음 (미래 데이터는 없으니까요)
-    start_date = st.date_input(
-        "시작일", 
-        value=datetime.date(2010, 1, 1), 
-        max_value=today
-    )
-    
-    # 3. 종료일 설정
-    # value: 기본값을 'today'(오늘)로 설정 -> 매일 접속할 때마다 자동으로 바뀝니다.
-    # max_value: 오늘 이후 날짜 선택 방지
-    end_date = st.date_input(
-        "종료일", 
-        value=today, 
-        max_value=today
-    )
-	# [기존 사이드바 코드 마지막 부분인 end_date 아래에 이어 붙이세요]
     
     st.markdown("---")
-    st.subheader("⚖️ 티어별 비중 설정 (%)")
-    st.caption("각 구간별 티어 진입 비중을 설정합니다. (합계 100% 권장)")
+    st.header("⚔️ 전략별 상세 설정")
+    
+    # 탭으로 안정형/공격형 완벽 분리
+    tab_s, tab_a = st.tabs(["🛡️ 안정형", "🔥 공격형"])
 
-    # 1. 기본값 데이터프레임 생성 (모두 10%)
-    default_data = {
-        'Tier': [f'Tier {i}' for i in range(1, 11)],
-        'Bottom': [10.0] * 10,
-        'Middle': [10.0] * 10,
-        'Ceiling': [10.0] * 10
-    }
-    df_weights_default = pd.DataFrame(default_data).set_index('Tier')
+    # === [함수] 파라미터 입력 위젯 생성기 (자본, 기간 포함) ===
+    def render_strategy_inputs(suffix, key_prefix):
+        st.subheader(f"📊 {key_prefix} 기본 설정")
+        
+        # [수정] 자본과 기간을 여기로 이동 (독립 설정)
+        balance = st.number_input(f"초기 자본 ($)", value=10000, key=f"bal_{suffix}")
+        
+        # 날짜 설정
+        today = datetime.date.today()
+        c_d1, c_d2 = st.columns(2)
+        start_date = c_d1.date_input("시작일", value=datetime.date(2010, 1, 1), max_value=today, key=f"sd_{suffix}")
+        end_date = c_d2.date_input("종료일", value=today, max_value=today, key=f"ed_{suffix}")
+        
+        st.markdown("---")
+        st.write("⚙️ **파라미터 설정**")
+        
+        # 수수료는 편의상 공통값(0.07)을 기본으로 하되 수정 가능하게
+        fee = st.number_input("수수료 (%)", value=0.07, step=0.01, format="%.2f", key=f"fee_{suffix}")
+        
+        profit_rate = st.slider("이익 복리율 (%)", 0, 100, 70, key=f"pr_{suffix}")
+        loss_rate = st.slider("손실 복리율 (%)", 0, 100, 50, key=f"lr_{suffix}")
+        
+        c_loc1, c_loc2 = st.columns(2)
+        add_order_cnt = c_loc1.number_input("분할 횟수", value=4, min_value=1, key=f"add_{suffix}") 
+        loc_range = c_loc2.number_input("LOC 범위 (-%)", value=20.0, min_value=0.0, key=f"rng_{suffix}")
+        ma_win = st.number_input("이평선 (MA)", 50, 300, 200, key=f"ma_{suffix}")
 
-    # 2. 데이터 에디터 출력
-    edited_weights = st.data_editor(
-        df_weights_default,
-        column_config={
-            "Bottom": st.column_config.NumberColumn("바닥(%)", min_value=0, max_value=100, format="%.1f%%"),
-            "Middle": st.column_config.NumberColumn("중간(%)", min_value=0, max_value=100, format="%.1f%%"),
-            "Ceiling": st.column_config.NumberColumn("천장(%)", min_value=0, max_value=100, format="%.1f%%"),
-        },
-        use_container_width=True
-    )
+        st.markdown("##### 📉 바닥 (Bottom)")
+        c1, c2 = st.columns(2)
+        bt_cond = c1.number_input("기준 이격", 0.8, 1.0, 0.90, step=0.01, key=f"bc_{suffix}")
+        bt_buy = c2.number_input("매수점%", -30.0, 30.0, 15.0, step=0.1, key=f"bb_{suffix}")
+        bt_prof = c1.number_input("익절%", 0.0, 100.0, 2.5, step=0.1, key=f"bp_{suffix}")
+        bt_time = c2.number_input("존버일", 1, 100, 10, key=f"bt_{suffix}")
 
-    # 3. 합계 검증 알림
-    sum_bot = edited_weights['Bottom'].sum()
-    sum_mid = edited_weights['Middle'].sum()
-    sum_ceil = edited_weights['Ceiling'].sum()
+        st.markdown("##### ➖ 중간 (Middle)")
+        c3, c4 = st.columns(2)
+        md_buy = c3.number_input("매수점%", -30.0, 30.0, -0.01, step=0.1, key=f"mb_{suffix}")
+        md_prof = c4.number_input("익절%", 0.0, 100.0, 2.8, step=0.1, key=f"mp_{suffix}")
+        md_time = c3.number_input("존버일", 1, 100, 15, key=f"mt_{suffix}")
 
-    if not (math.isclose(sum_bot, 100, abs_tol=0.1) and math.isclose(sum_mid, 100, abs_tol=0.1) and math.isclose(sum_ceil, 100, abs_tol=0.1)):
-         st.warning(f"⚠️ 합계 주의: 바닥({sum_bot:.0f}%), 중간({sum_mid:.0f}%), 천장({sum_ceil:.0f}%)")
+        st.markdown("##### 📈 천장 (Ceiling)")
+        c5, c6 = st.columns(2)
+        cl_cond = c5.number_input("기준 이격", 1.0, 1.5, 1.10, step=0.01, key=f"cc_{suffix}")
+        cl_buy = c6.number_input("매수점%", -30.0, 30.0, -0.1, step=0.1, key=f"cb_{suffix}")
+        cl_prof = c5.number_input("익절%", 0.0, 100.0, 1.5, step=0.1, key=f"cp_{suffix}")
+        cl_time = c6.number_input("존버일", 1, 100, 40, key=f"ct_{suffix}")
+        
+        st.markdown("---")
+        st.write("⚖️ **티어별 비중**")
+        default_w = pd.DataFrame({
+            'Tier': [f'Tier {i}' for i in range(1, 11)],
+            'Bottom': [10.0] * 10, 'Middle': [10.0] * 10, 'Ceiling': [10.0] * 10
+        }).set_index('Tier')
+        
+        edited_w = st.data_editor(
+            default_w,
+            key=f"w_{suffix}",
+            column_config={
+                "Bottom": st.column_config.NumberColumn("바닥%", format="%.1f%%"),
+                "Middle": st.column_config.NumberColumn("중간%", format="%.1f%%"),
+                "Ceiling": st.column_config.NumberColumn("천장%", format="%.1f%%"),
+            }, use_container_width=True
+        )
+        return {
+            'start_date': start_date, 'end_date': end_date, # [핵심] 독립된 날짜 반환
+            'initial_balance': balance,                     # [핵심] 독립된 자본 반환
+            'fee_rate': fee/100,
+            'profit_rate': profit_rate/100.0, 'loss_rate': loss_rate/100.0,
+            'loc_range': loc_range, 'add_order_cnt': add_order_cnt,
+            'force_round': True, 'ma_window': ma_win, 
+            'bt_cond': bt_cond, 'bt_buy': bt_buy, 'bt_prof': bt_prof/100, 'bt_time': bt_time,
+            'md_buy': md_buy, 'md_prof': md_prof/100, 'md_time': md_time,
+            'cl_cond': cl_cond, 'cl_buy': cl_buy, 'cl_prof': cl_prof/100, 'cl_time': cl_time,
+            'tier_weights': edited_w,
+            'label': key_prefix
+        }
+
+    # 1. 안정형 설정 (Suffix: s)
+    with tab_s:
+        params_s = render_strategy_inputs('s', '🛡️ 안정형')
+
+    # 2. 공격형 설정 (Suffix: a)
+    with tab_a:
+        params_a = render_strategy_inputs('a', '🔥 공격형')
+
 
 if sheet_url:
     df = load_data_from_gsheet(sheet_url)
     
     if df is not None:
-        # [수정] 탭에 "대시보드"를 맨 앞에 추가합니다.
-        tab0, tab1, tab2, tab3 = st.tabs(["📢 대시보드", "🚀 백테스트", "🎲 몬테카를로 최적화", "🔬 심층 분석"])
-        
-        # 탭 1: 백테스트
-        with tab1:
-            st.subheader("🛠️ 전략 파라미터 입력")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.markdown("##### 📉 바닥 (Bottom)")
-                bt_cond = st.number_input("기준 이격도", 0.8, 1.0, 0.90, step=0.01)
-                bt_buy = st.number_input("매수점 (%)", -30.0, 30.0, 15.0, step=0.1, key='bt_b')
-                bt_prof = st.number_input("익절 (%)", 0.0, 100.0, 2.5, step=0.1, key='bt_p')
-                bt_time = st.number_input("존버일", 1, 100, 10, key='bt_t')
-            with col2:
-                st.markdown("##### ➖ 중간 (Middle)")
-                md_buy = st.number_input("매수점 (%)", -30.0, 30.0, -0.01, step=0.1, key='md_b')
-                md_prof = st.number_input("익절 (%)", 0.0, 100.0, 2.8, step=0.1, key='md_p')
-                md_time = st.number_input("존버일", 1, 100, 15, key='md_t')
-            with col3:
-                st.markdown("##### 📈 천장 (Ceiling)")
-                cl_cond = st.number_input("기준 이격도", 1.0, 1.5, 1.10, step=0.01)
-                cl_buy = st.number_input("매수점 (%)", -30.0, 30.0, -0.1, step=0.1, key='cl_b')
-                cl_prof = st.number_input("익절 (%)", 0.0, 100.0, 1.5, step=0.1, key='cl_p')
-                cl_time = st.number_input("존버일", 1, 100, 40, key='cl_t')
-            ma_win = st.number_input("이평선 (MA)", 50, 300, 200)
+        tab_dash, tab_bt = st.tabs(["📢 듀얼 대시보드", "🚀 성과 비교"])
 
-            if st.button("백테스트 실행 (Run)", type="primary"):
-                current_params = {
-                    'start_date': start_date, 'end_date': end_date,
-                    'initial_balance': balance, 'fee_rate': fee/100,
-                    'profit_rate': profit_rate/100.0, 'loss_rate': loss_rate/100.0,
-                    'loc_range': loc_range, 'add_order_cnt': add_order_cnt,
-                    'force_round': True,
-                    'ma_window': ma_win, 
-                    'bt_cond': bt_cond, 'bt_buy': bt_buy, 'bt_prof': bt_prof/100, 'bt_time': bt_time,
-                    'md_buy': md_buy, 'md_prof': md_prof/100, 'md_time': md_time,
-                    'cl_cond': cl_cond, 'cl_buy': cl_buy, 'cl_prof': cl_prof/100, 'cl_time': cl_time,
-					'tier_weights': edited_weights,
-                    'label': '🎯 현재 설정'
-                }
-                res = backtest_engine_web(df, current_params)
-                if res:
-                    st.session_state.last_backtest_result = res
+        # ==========================================
+        # 탭 1: 듀얼 대시보드 (오늘의 주문)
+        # ==========================================
+        with tab_dash:
+            st.header(f"📢 오늘의 투자 브리핑 ({df.index[-1].strftime('%Y-%m-%d')})")
+            
+            col_stable, col_agg = st.columns(2)
+            
+            # --- 대시보드 출력용 함수 ---
+            def render_dashboard(col, p_params, strategy_name):
+                with col:
+                    st.subheader(f"{strategy_name}")
                     
-                    m1, m2, m3, m4 = st.columns(4)
-                    m1.metric("최종 자산", f"${res['Final']:,.0f}", f"{res['Return']}%")
-                    m2.metric("CAGR (연평균)", f"{res['CAGR']}%")
-                    m3.metric("MDD (최대낙폭)", f"{res['MDD']}%")
-                    m4.metric("승률 / 횟수", f"{res['WinRate']}%", f"{res['Trades']}회")
+                    # [중요] 각 전략의 start_date/balance로 백테스트 실행
+                    res = backtest_engine_web(df, p_params)
+                    if not res:
+                        st.error("데이터 부족 (기간 확인)")
+                        return
+
+                    last_row = res['LastData']
+                    daily_last = res['DailyLog'].iloc[-1]
+                    current_cash = daily_last['Cash']
+                    seed_equity_basis = daily_last['SeedEquity']
+                    current_holdings = res['CurrentHoldings']
                     
-                    c_d1, c_d2 = st.columns(2)
-                    csv_trade = res['TradeLog'].to_csv(index=False).encode('utf-8-sig')
-                    c_d1.download_button("📥 매매일지 다운로드", csv_trade, "trade_log.csv", "text/csv")
-                    csv_daily = res['DailyLog'].to_csv(index=False).encode('utf-8-sig')
-                    c_d2.download_button("📥 자산일지 다운로드", csv_daily, "daily_log.csv", "text/csv")
+                    disp = last_row['Basis_Disp']
+                    if disp < p_params['bt_cond']: curr_phase = "📉 바닥"
+                    elif disp > p_params['cl_cond']: curr_phase = "📈 천장"
+                    else: curr_phase = "➖ 중간"
+                    
+                    # 요약 지표 (시드 자산 기준 표기)
+                    st.metric("시드 자산 (확정)", f"${seed_equity_basis:,.0f}")
+                    st.metric("보유 현금", f"${current_cash:,.0f}")
+                    st.caption(f"이격도: {disp:.4f} ({curr_phase}) | 초기자본: ${p_params['initial_balance']:,}")
+                    st.divider()
 
-                    st.line_chart(res['Series'])
-                    st.markdown("#### 📅 연도별 수익률")
-                    fig, ax = plt.subplots(figsize=(10, 4))
-                    colors = ['red' if x >= 0 else 'blue' for x in res['Yearly']]
-                    bars = ax.bar(res['Yearly'].index.year, res['Yearly'], color=colors, alpha=0.7)
-                    ax.axhline(0, color='black', linewidth=0.8)
-                    ax.grid(axis='y', linestyle='--', alpha=0.3)
-                    for bar in bars:
-                        height = bar.get_height()
-                        ax.text(bar.get_x() + bar.get_width()/2., height, f'{height:.1f}%', 
-                                ha='center', va='bottom' if height > 0 else 'top', fontsize=8)
-                    st.pyplot(fig)
-                else:
-                    st.error("백테스트 결과가 없습니다. (날짜 범위 또는 데이터 확인 필요)")
+                    # 매수 주문 로직
+                    n_split = int(p_params['add_order_cnt'])
+                    loc_range = p_params['loc_range']
+                    next_tier = min(len(current_holdings) + 1, 10)
+                    
+                    if "바닥" in curr_phase: col_key = "Bottom"; start_rate = p_params['bt_buy']
+                    elif "천장" in curr_phase: col_key = "Ceiling"; start_rate = p_params['cl_buy']
+                    else: col_key = "Middle"; start_rate = p_params['md_buy']
+                    
+                    try: target_weight = p_params['tier_weights'].loc[f'Tier {next_tier}', col_key]
+                    except: target_weight = 10.0
+                    
+                    # 1회 시드 계산 (확정 자산 기준)
+                    one_time_seed = seed_equity_basis * (target_weight / 100.0)
+                    
+                    base_price = last_row['SOXL']
+                    loc_price = excel_round_down(base_price * (1 + start_rate/100.0), 2)
 
+                    # Smart LOC 내부 함수
+                    def get_smart_orders(seed, start_p, range_pct, split_cnt):
+                        orders = []
+                        if start_p <= 0: return orders
+                        base_qty = int(seed / start_p)
+                        orders.append({'price': start_p, 'qty': base_qty, 'type': 'MAIN'})
+                        if split_cnt <= 0: return orders
+                        multiplier = (1 + range_pct) if range_pct <= 0 else (1 - range_pct)
+                        bot_p = excel_round_down(start_p * multiplier, 2)
+                        if bot_p <= 0: return orders
+                        qty_at_bot = seed / bot_p
+                        qty_at_top = seed / start_p
+                        fix_qty = int((qty_at_bot - qty_at_top) / split_cnt)
+                        if fix_qty < 0: fix_qty = 0
+                        for i in range(1, split_cnt + 1):
+                            target_cum_qty = base_qty + (i * fix_qty)
+                            if target_cum_qty > 0:
+                                next_p = excel_round_down(seed / target_cum_qty, 2)
+                                if next_p > 0 and next_p < start_p:
+                                    orders.append({'price': next_p, 'qty': fix_qty, 'type': 'ADD'})
+                        return orders
+
+                    # [A] 신규 진입 출력
+                    if len(current_holdings) < 10:
+                        st.info(f"🆕 **신규 진입 (Tier {next_tier})**")
+                        # [핵심] 1회 시드 vs 보유 현금 중 작은 값 사용 (수수료 제외)
+                        real_bet = min(one_time_seed, current_cash)
+                        net_bet = real_bet / (1 + p_params['fee_rate'])
+                        
+                        orders = get_smart_orders(net_bet, loc_price, -1*(loc_range/100.0), n_split)
+                        
+                        rem_cash = current_cash
+                        total_est = 0
+                        for o in orders:
+                            cost = o['price']*o['qty']
+                            total_est += cost
+                            if rem_cash >= cost:
+                                rem_cash -= cost
+                                icon = "⭐" if o['type'] == 'MAIN' else "💧"
+                                st.write(f"{icon} **${o['price']}** × {o['qty']}개")
+                            else:
+                                st.caption(f"현금부족 (${o['price']})")
+                        st.caption(f"(예상 투입: ${total_est:,.0f})")
+                    else:
+                        st.warning("슬롯 꽉 참")
+                    
+                    # [B] 보유 종목 출력
+                    if current_holdings:
+                        with st.expander(f"보유 종목 ({len(current_holdings)}개) & 추가매수"):
+                            for h in current_holdings:
+                                buy_p, days, qty, mode, tier, _ = h
+                                st.markdown(f"**T{tier}** (${buy_p}) - {days}일차")
+                                
+                                # 물타기 계산
+                                real_bet_add = min(one_time_seed, current_cash)
+                                net_bet_add = real_bet_add / (1 + p_params['fee_rate'])
+                                orders = get_smart_orders(net_bet_add, loc_price, -1*(loc_range/100.0), n_split)
+                                rem_cash = current_cash
+                                has_order = False
+                                for o in orders:
+                                    cost = o['price']*o['qty']
+                                    icon = "💧" if o['price'] < buy_p else "🔥"
+                                    if rem_cash >= cost:
+                                        st.write(f"{icon} ${o['price']} × {o['qty']}개")
+                                        has_order = True
+                                if not has_order: st.caption("주문 불가")
+                                st.divider()
+
+            # 왼쪽: 안정형, 오른쪽: 공격형 렌더링
+            render_dashboard(col_stable, params_s, "🛡️ 안정형 전략")
+            render_dashboard(col_agg, params_a, "🔥 공격형 전략")
+
+
+        # ==========================================
+        # 탭 2: 성과 비교 (백테스트)
+        # ==========================================
+        with tab_bt:
+            st.info("💡 각 전략의 설정된 기간과 자본금으로 시뮬레이션을 실행합니다.")
+            if st.button("🚀 두 전략 비교 실행", type='primary'):
+                with st.spinner("듀얼 백테스트 진행 중..."):
+                    res_s = backtest_engine_web(df, params_s)
+                    res_a = backtest_engine_web(df, params_a)
+                
+                if res_s and res_a:
+                    # 1. 지표 비교 테이블
+                    comp_data = {
+                        '구분': ['기간', '초기 자본', '최종 자산', '수익률', 'CAGR', 'MDD', '승률'],
+                        '🛡️ 안정형': [
+                            f"{params_s['start_date']}~", f"${params_s['initial_balance']:,}",
+                            f"${res_s['Final']:,.0f}", f"{res_s['Return']:.2f}%", 
+                            f"{res_s['CAGR']:.2f}%", f"{res_s['MDD']:.2f}%", f"{res_s['WinRate']}%"
+                        ],
+                        '🔥 공격형': [
+                            f"{params_a['start_date']}~", f"${params_a['initial_balance']:,}",
+                            f"${res_a['Final']:,.0f}", f"{res_a['Return']:.2f}%", 
+                            f"{res_a['CAGR']:.2f}%", f"{res_a['MDD']:.2f}%", f"{res_a['WinRate']}%"
+                        ]
+                    }
+                    st.table(pd.DataFrame(comp_data).set_index('구분'))
+                    
+                    # 2. 그래프 겹쳐 그리기 (기간이 달라도 날짜축 기준으로 자동 매핑됨)
+                    st.subheader("📈 자산 성장 곡선 비교")
+                    chart_df = pd.DataFrame({
+                        'Stable': res_s['Series'],
+                        'Aggressive': res_a['Series']
+                    })
+                    st.line_chart(chart_df)
+                    
+                    # 3. 상세 로그 다운로드
+                    c1, c2 = st.columns(2)
+                    c1.download_button("📥 안정형 로그", res_s['TradeLog'].to_csv().encode('utf-8-sig'), "stable_log.csv")
+                    c2.download_button("📥 공격형 로그", res_a['TradeLog'].to_csv().encode('utf-8-sig'), "agg_log.csv")
+
+else:
+    st.warning("👈 구글 시트 URL을 입력해주세요.")
         # 탭 2: 몬테카를로
         with tab2:
             st.header("🎲 최적 파라미터 탐색기")
@@ -1028,4 +1161,5 @@ MY_BEST_PARAMS = {{
 else:
 
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
 
