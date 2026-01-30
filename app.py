@@ -25,6 +25,8 @@ if 'trial_count' not in st.session_state:
     st.session_state.trial_count = 0
 if 'last_backtest_result' not in st.session_state:
     st.session_state.last_backtest_result = None
+if 'editor_ver' not in st.session_state: # [추가] 에디터 초기화 버전 관리
+    st.session_state.editor_ver = 0
 
 # --- [구글 시트 연동 및 설정 관리 함수] ---
 def get_gspread_client():
@@ -114,7 +116,7 @@ def send_orders_to_gsheet(orders_df, sheet_url, worksheet_name="HTS주문"):
         st.error(f"주문 전송 실패: {e}")
         return False
 
-# --- [설정 저장/불러오기 로직 수정본] ---
+# --- [설정 저장/불러오기 로직 (오류 수정본)] ---
 def save_settings_to_gsheet(sheet_url):
     client = get_gspread_client()
     if not client: return
@@ -124,26 +126,26 @@ def save_settings_to_gsheet(sheet_url):
         except: ws = sheet.add_worksheet(title="Settings", rows=100, cols=2)
         
         data_to_save = []
-        # 저장할 키 패턴 (안정형_s, 공격형_a)
-        # 단, 데이터프레임은 위젯 키(w_s)가 아니라 현재 값을 가져와야 함
         
         # 1. 일반 변수 저장
+        # (w_로 시작하는 위젯 키는 제외하고, 실제 값만 저장)
         for key in st.session_state:
-            if (key.endswith('_s') or key.endswith('_a')) and not key.startswith('w_') and not key.startswith('base_w_'):
+            if (key.endswith('_s') or key.endswith('_a')) and not key.startswith('w_') and not key.startswith('base_w_') and not key.startswith('current_w_'):
                 val = st.session_state[key]
                 if isinstance(val, (datetime.date, datetime.datetime)):
                     val = val.strftime('%Y-%m-%d')
                 data_to_save.append([key, str(val)])
         
         # 2. 데이터프레임(비중표) 저장
-        # 위젯 키(w_s, w_a)에 있는 값이 최신 편집본입니다.
+        # 에디터의 결과가 저장된 'current_w_s', 'current_w_a'를 사용
         for suffix in ['s', 'a']:
-            key = f"w_{suffix}"
-            if key in st.session_state:
-                df_val = st.session_state[key]
+            current_key = f"current_w_{suffix}"
+            if current_key in st.session_state:
+                df_val = st.session_state[current_key]
                 if isinstance(df_val, pd.DataFrame):
                     val = "DF:" + df_val.to_json()
-                    data_to_save.append([key, val])
+                    # 저장할 때는 깔끔하게 'w_s', 'w_a'라는 이름으로 저장
+                    data_to_save.append([f"w_{suffix}", val])
 
         ws.clear()
         if data_to_save:
@@ -163,23 +165,23 @@ def load_settings_from_gsheet(sheet_url):
         except: return
         
         rows = ws.get_all_values()
+        df_loaded_flag = False
+
         for row in rows:
             if len(row) < 2: continue
             key, val_str = row[0], row[1]
             
-            # [핵심 수정] 데이터프레임 처리 방식 변경
-            if key.startswith('w_') and val_str.startswith("DF:"):
+            # [수정] 데이터프레임 처리
+            if (key == 'w_s' or key == 'w_a') and val_str.startswith("DF:"):
                 try: 
+                    suffix = key.split('_')[-1] # s or a
                     json_str = val_str[3:]
                     loaded_df = pd.read_json(json_str)
                     
-                    # 위젯 키(w_s)에 직접 넣지 않고, 'base' 변수에 저장
-                    base_key = f"base_{key}" 
+                    # 베이스 변수에 저장
+                    base_key = f"base_w_{suffix}" 
                     st.session_state[base_key] = loaded_df
-                    
-                    # 기존 위젯 상태가 있다면 삭제하여 강제 리셋 (새 값 반영)
-                    if key in st.session_state:
-                        del st.session_state[key]
+                    df_loaded_flag = True
                 except: pass
             else:
                 # 일반 변수 처리
@@ -192,6 +194,10 @@ def load_settings_from_gsheet(sheet_url):
                 except:
                     st.session_state[key] = val_str
         
+        # 데이터가 로드되었으면 에디터 버전을 올려서 강제 리셋 (충돌 방지)
+        if df_loaded_flag:
+            st.session_state.editor_ver += 1
+
         st.session_state['settings_loaded'] = True
     except Exception as e:
         print(f"설정 로드 중 오류: {e}")
@@ -500,8 +506,7 @@ with st.sidebar:
         st.markdown("---")
         st.write("⚖️ **티어별 비중**")
         
-        # [핵심 수정] 에디터 초기값 결정 로직
-        # 베이스 데이터가 있으면 그것을 사용, 없으면 기본값
+        # [핵심 수정] 버전 관리(v)가 포함된 유니크 키 사용 -> 충돌 완벽 해결
         base_key = f"base_w_{suffix}"
         if base_key in st.session_state:
             initial_data = st.session_state[base_key]
@@ -513,10 +518,13 @@ with st.sidebar:
             initial_data = pd.DataFrame(default_data).set_index('Tier')
             st.session_state[base_key] = initial_data
 
-        # st.data_editor 사용
+        # unique_key: 불러오기 할 때마다 키가 바뀌어서(v1, v2..) 에디터가 새로 그려짐
+        current_ver = st.session_state.editor_ver
+        unique_key = f"w_{suffix}_v{current_ver}"
+        
         edited_w = st.data_editor(
-            initial_data, # 베이스 데이터를 초기값으로 전달
-            key=f"w_{suffix}", # 사용자 편집은 이 키에 저장됨
+            initial_data, 
+            key=unique_key, 
             column_config={
                 "Bottom": st.column_config.NumberColumn("바닥%", format="%.1f%%"),
                 "Middle": st.column_config.NumberColumn("중간%", format="%.1f%%"),
@@ -524,6 +532,9 @@ with st.sidebar:
             }, use_container_width=True
         )
         
+        # 저장용 최신 데이터를 별도 키에 백업 (저장 버튼 누를 때 사용)
+        st.session_state[f"current_w_{suffix}"] = edited_w
+
         return {
             'start_date': start_date, 'end_date': end_date,
             'initial_balance': balance,
