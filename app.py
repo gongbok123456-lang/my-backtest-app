@@ -114,7 +114,7 @@ def send_orders_to_gsheet(orders_df, sheet_url, worksheet_name="HTS주문"):
         st.error(f"주문 전송 실패: {e}")
         return False
 
-# --- [설정 저장/불러오기 로직] ---
+# --- [설정 저장/불러오기 로직 수정본] ---
 def save_settings_to_gsheet(sheet_url):
     client = get_gspread_client()
     if not client: return
@@ -123,19 +123,28 @@ def save_settings_to_gsheet(sheet_url):
         try: ws = sheet.worksheet("Settings")
         except: ws = sheet.add_worksheet(title="Settings", rows=100, cols=2)
         
-        # 저장할 키 패턴 (안정형_s, 공격형_a)
         data_to_save = []
+        # 저장할 키 패턴 (안정형_s, 공격형_a)
+        # 단, 데이터프레임은 위젯 키(w_s)가 아니라 현재 값을 가져와야 함
+        
+        # 1. 일반 변수 저장
         for key in st.session_state:
-            if key.endswith('_s') or key.endswith('_a'):
+            if (key.endswith('_s') or key.endswith('_a')) and not key.startswith('w_') and not key.startswith('base_w_'):
                 val = st.session_state[key]
-                # 날짜 처리
                 if isinstance(val, (datetime.date, datetime.datetime)):
                     val = val.strftime('%Y-%m-%d')
-                # 데이터프레임 처리 (비중표)
-                elif isinstance(val, pd.DataFrame):
-                    val = "DF:" + val.to_json()
                 data_to_save.append([key, str(val)])
         
+        # 2. 데이터프레임(비중표) 저장
+        # 위젯 키(w_s, w_a)에 있는 값이 최신 편집본입니다.
+        for suffix in ['s', 'a']:
+            key = f"w_{suffix}"
+            if key in st.session_state:
+                df_val = st.session_state[key]
+                if isinstance(df_val, pd.DataFrame):
+                    val = "DF:" + df_val.to_json()
+                    data_to_save.append([key, val])
+
         ws.clear()
         if data_to_save:
             ws.update(data_to_save)
@@ -144,7 +153,6 @@ def save_settings_to_gsheet(sheet_url):
         st.error(f"설정 저장 실패: {e}")
 
 def load_settings_from_gsheet(sheet_url):
-    # 이미 로드된 상태면 스킵 (새로고침 시에만 실행)
     if 'settings_loaded' in st.session_state: return
 
     client = get_gspread_client()
@@ -152,32 +160,40 @@ def load_settings_from_gsheet(sheet_url):
     try:
         sheet = client.open_by_url(sheet_url)
         try: ws = sheet.worksheet("Settings")
-        except: return # 설정 시트 없으면 패스
+        except: return
         
         rows = ws.get_all_values()
         for row in rows:
             if len(row) < 2: continue
             key, val_str = row[0], row[1]
             
-            # 타입 복원 로직
-            if key.startswith('sd_') or key.startswith('ed_'): # 날짜
-                try: st.session_state[key] = datetime.datetime.strptime(val_str, '%Y-%m-%d').date()
-                except: pass
-            elif key.startswith('w_') and val_str.startswith("DF:"): # 데이터프레임
+            # [핵심 수정] 데이터프레임 처리 방식 변경
+            if key.startswith('w_') and val_str.startswith("DF:"):
                 try: 
                     json_str = val_str[3:]
-                    st.session_state[key] = pd.read_json(json_str)
+                    loaded_df = pd.read_json(json_str)
+                    
+                    # 위젯 키(w_s)에 직접 넣지 않고, 'base' 변수에 저장
+                    base_key = f"base_{key}" 
+                    st.session_state[base_key] = loaded_df
+                    
+                    # 기존 위젯 상태가 있다면 삭제하여 강제 리셋 (새 값 반영)
+                    if key in st.session_state:
+                        del st.session_state[key]
                 except: pass
-            else: # 숫자 (int/float)
+            else:
+                # 일반 변수 처리
                 try:
-                    if '.' in val_str: st.session_state[key] = float(val_str)
-                    else: st.session_state[key] = int(val_str)
+                    if key.startswith('sd_') or key.startswith('ed_'):
+                        st.session_state[key] = datetime.datetime.strptime(val_str, '%Y-%m-%d').date()
+                    else:
+                        if '.' in val_str: st.session_state[key] = float(val_str)
+                        else: st.session_state[key] = int(val_str)
                 except:
-                    st.session_state[key] = val_str # 문자열 그대로
+                    st.session_state[key] = val_str
         
         st.session_state['settings_loaded'] = True
     except Exception as e:
-        # 설정 로드 실패는 조용히 넘어감 (초기 상태일 수 있음)
         print(f"설정 로드 중 오류: {e}")
 
 # --- [유틸리티 함수] ---
@@ -483,20 +499,31 @@ with st.sidebar:
         
         st.markdown("---")
         st.write("⚖️ **티어별 비중**")
-        default_w = pd.DataFrame({
-            'Tier': [f'Tier {i}' for i in range(1, 11)],
-            'Bottom': [10.0] * 10, 'Middle': [10.0] * 10, 'Ceiling': [10.0] * 10
-        }).set_index('Tier')
         
+        # [핵심 수정] 에디터 초기값 결정 로직
+        # 베이스 데이터가 있으면 그것을 사용, 없으면 기본값
+        base_key = f"base_w_{suffix}"
+        if base_key in st.session_state:
+            initial_data = st.session_state[base_key]
+        else:
+            default_data = {
+                'Tier': [f'Tier {i}' for i in range(1, 11)],
+                'Bottom': [10.0] * 10, 'Middle': [10.0] * 10, 'Ceiling': [10.0] * 10
+            }
+            initial_data = pd.DataFrame(default_data).set_index('Tier')
+            st.session_state[base_key] = initial_data
+
+        # st.data_editor 사용
         edited_w = st.data_editor(
-            default_w,
-            key=f"w_{suffix}",
+            initial_data, # 베이스 데이터를 초기값으로 전달
+            key=f"w_{suffix}", # 사용자 편집은 이 키에 저장됨
             column_config={
                 "Bottom": st.column_config.NumberColumn("바닥%", format="%.1f%%"),
                 "Middle": st.column_config.NumberColumn("중간%", format="%.1f%%"),
                 "Ceiling": st.column_config.NumberColumn("천장%", format="%.1f%%"),
             }, use_container_width=True
         )
+        
         return {
             'start_date': start_date, 'end_date': end_date,
             'initial_balance': balance,
