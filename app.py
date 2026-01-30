@@ -13,7 +13,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 # 1. 주가 데이터 읽기용
 DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1dK11y5aTIhDGfpMduNsuSgTDlDoPo-OF6uE5FIePXVg/edit"
 # 2. 주문 전송용 (기본값)
-DEFAULT_ORDER_URL = "" 
+DEFAULT_ORDER_URL = "https://docs.google.com/spreadsheets/d/1PpgexM79XVvr23sVfi_6ZsrfASetVXhqjJQDYuISOnM/edit?gid=117251557#gid=117251557" 
 
 # --- [페이지 설정] ---
 st.set_page_config(page_title="쪼꼬야옹 백테스트 연구소", page_icon="📈", layout="wide")
@@ -721,3 +721,4 @@ if sheet_url:
 
 else:
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
