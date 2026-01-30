@@ -797,7 +797,9 @@ MY_BEST_PARAMS = {{
                 k1, k2, k3, k4 = st.columns(4)
                 current_cash = res['DailyLog'].iloc[-1]['Cash']
                 total_equity = res['DailyLog'].iloc[-1]['Equity']
-                
+                # [추가] 시드 계산용 '확정 자산' 가져오기
+                seed_equity_basis = res['DailyLog'].iloc[-1]['SeedEquity']
+
                 # 현재 구간(Phase) 판단
                 disp = last_row['Basis_Disp']
                 if disp < dash_params['bt_cond']: curr_phase = "📉 바닥 (Bottom)"
@@ -837,7 +839,7 @@ MY_BEST_PARAMS = {{
                     except:
                         target_weight = 10.0
                         
-                    one_time_seed = total_equity * (target_weight / 100.0)
+                    one_time_seed = seed_equity_basis * (target_weight / 100.0)
                     
                     # 1. 구간별 시작 비율
                     if "바닥" in curr_phase: start_rate = dash_params['bt_buy']
@@ -1026,6 +1028,7 @@ MY_BEST_PARAMS = {{
 else:
 
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
 
 
 
