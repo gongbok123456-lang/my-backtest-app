@@ -408,8 +408,13 @@ st.title("📊 쪼꼬야옹의 듀얼 전략 연구소")
 
 with st.sidebar:
     st.header("⚙️ 기본 데이터 연동")
-    sheet_url = st.text_input("🔗 구글 시트 주소", value=DEFAULT_SHEET_URL)
+    sheet_url = st.text_input("🔗 주가 데이터 시트 (읽기)", value=DEFAULT_SHEET_URL)
     st.caption("※ 시트에 'Date', 'SOXL', 'QQQ' 데이터가 있어야 합니다.")
+    
+    st.markdown("---")
+    st.header("📤 HTS 주문 전송 설정")
+    order_sheet_url = st.text_input("🔗 주문 전송 시트 (쓰기)", value="", placeholder="구글시트 URL 입력")
+    st.caption("※ 서비스 계정 이메일에 편집 권한 필요")
     
     st.markdown("---")
     st.header("⚔️ 전략별 상세 설정")
@@ -732,36 +737,40 @@ if sheet_url:
             if all_orders:
                 orders_df = pd.DataFrame(all_orders)
                 
-                col_btn1, col_btn2 = st.columns(2)
-                
-                with col_btn1:
-                    if st.button("🚀 지금 전송", type="primary", use_container_width=True):
-                        if send_orders_to_gsheet(orders_df, sheet_url, "HTS주문"):
-                            st.success("✅ 전송 완료!")
+                # 주문 시트 URL 확인
+                if not order_sheet_url:
+                    st.warning("⚠️ 사이드바에서 '주문 전송 시트' URL을 입력해주세요.")
+                else:
+                    col_btn1, col_btn2 = st.columns(2)
+                    
+                    with col_btn1:
+                        if st.button("🚀 지금 전송", type="primary", use_container_width=True):
+                            if send_orders_to_gsheet(orders_df, order_sheet_url, "HTS주문"):
+                                st.success("✅ 전송 완료!")
+                            else:
+                                st.error("❌ 전송 실패 (권한 확인 필요)")
+                    
+                    with col_btn2:
+                        # 자동 전송 시간 설정
+                        auto_time = st.time_input("⏰ 자동 전송 시간", value=datetime.time(22, 30))
+                        
+                        # 현재 시간과 비교하여 자동 전송
+                        now = datetime.datetime.now().time()
+                        if 'last_auto_send' not in st.session_state:
+                            st.session_state.last_auto_send = None
+                        
+                        today_str = datetime.date.today().isoformat()
+                        
+                        # 오늘 이미 전송했는지 확인
+                        if st.session_state.last_auto_send == today_str:
+                            st.info(f"✅ 오늘 {auto_time} 자동 전송 완료")
+                        elif now >= auto_time:
+                            # 자동 전송 실행
+                            if send_orders_to_gsheet(orders_df, order_sheet_url, "HTS주문"):
+                                st.session_state.last_auto_send = today_str
+                                st.success(f"⏰ {auto_time} 자동 전송 완료!")
                         else:
-                            st.error("❌ 전송 실패 (권한 확인 필요)")
-                
-                with col_btn2:
-                    # 자동 전송 시간 설정
-                    auto_time = st.time_input("⏰ 자동 전송 시간", value=datetime.time(22, 30))
-                    
-                    # 현재 시간과 비교하여 자동 전송
-                    now = datetime.datetime.now().time()
-                    if 'last_auto_send' not in st.session_state:
-                        st.session_state.last_auto_send = None
-                    
-                    today_str = datetime.date.today().isoformat()
-                    
-                    # 오늘 이미 전송했는지 확인
-                    if st.session_state.last_auto_send == today_str:
-                        st.info(f"✅ 오늘 {auto_time} 자동 전송 완료")
-                    elif now >= auto_time:
-                        # 자동 전송 실행
-                        if send_orders_to_gsheet(orders_df, sheet_url, "HTS주문"):
-                            st.session_state.last_auto_send = today_str
-                            st.success(f"⏰ {auto_time} 자동 전송 완료!")
-                    else:
-                        st.caption(f"⏳ {auto_time}에 자동 전송 예정")
+                            st.caption(f"⏳ {auto_time}에 자동 전송 예정")
             else:
                 st.caption("전송할 주문 데이터가 없습니다.")
 
