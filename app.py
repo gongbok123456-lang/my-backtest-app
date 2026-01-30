@@ -5,13 +5,15 @@ import matplotlib.pyplot as plt
 import math
 import datetime
 import time
+import json
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # --- [기본 설정 값] ---
+# 1. 주가 데이터 읽기용
 DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1dK11y5aTIhDGfpMduNsuSgTDlDoPo-OF6uE5FIePXVg/edit"
-# 2. [추가] 주문 전송용 (여기에 주소를 넣으세요)
-DEFAULT_ORDER_URL = "https://docs.google.com/spreadsheets/d/1G92EFiZGVyIg1F7Qf18AOkkBDp0OEDdZnRr_wP2RSIA/edit"
+# 2. 주문 전송용 (기본값)
+DEFAULT_ORDER_URL = "" 
 
 # --- [페이지 설정] ---
 st.set_page_config(page_title="쪼꼬야옹 백테스트 연구소", page_icon="📈", layout="wide")
@@ -24,32 +26,34 @@ if 'trial_count' not in st.session_state:
 if 'last_backtest_result' not in st.session_state:
     st.session_state.last_backtest_result = None
 
-# --- [구글 시트 데이터 로드 함수] ---
-@st.cache_data(ttl=600)
-def load_data_from_gsheet(url):
+# --- [구글 시트 연동 및 설정 관리 함수] ---
+def get_gspread_client():
     try:
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds_dict = dict(st.secrets["gcp_service_account"])
-        
         if "private_key" in creds_dict:
             creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-            
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        client = gspread.authorize(creds)
+        return gspread.authorize(creds)
+    except Exception as e:
+        st.error(f"구글 인증 실패: {e}")
+        return None
 
+@st.cache_data(ttl=600)
+def load_data_from_gsheet(url):
+    client = get_gspread_client()
+    if not client: return None
+    try:
         sheet = client.open_by_url(url)
         worksheet = sheet.get_worksheet(0)
         rows = worksheet.get_all_values()
         
-        if not rows:
-            st.error("❌ 시트가 비어있습니다.")
-            return None
+        if not rows: return None
 
-        # 헤더 위치 찾기
+        # 헤더 찾기
         header_row_idx = -1
         idx_qqq = -1
         idx_soxl = -1
-        
         for i, row in enumerate(rows[:20]):
             if "QQQ" in row and "SOXL" in row:
                 header_row_idx = i
@@ -57,11 +61,8 @@ def load_data_from_gsheet(url):
                 idx_soxl = row.index("SOXL")
                 break
         
-        if header_row_idx == -1:
-            st.error("❌ 시트에서 'QQQ'와 'SOXL' 헤더를 찾을 수 없습니다.")
-            return None
+        if header_row_idx == -1: return None
 
-        # 데이터 추출 함수
         def extract_series(data_rows, col_idx, name):
             start_row = header_row_idx + 2 
             extracted = []
@@ -69,84 +70,115 @@ def load_data_from_gsheet(url):
                 if len(r) > col_idx + 1:
                     d = r[col_idx]
                     p = r[col_idx + 1]
-                    if d and p:
-                        extracted.append([d, p])
+                    if d and p: extracted.append([d, p])
             
             df_temp = pd.DataFrame(extracted, columns=['Date', name])
-            df_temp['Date'] = df_temp['Date'].astype(str).str.strip()
-            df_temp['Date'] = df_temp['Date'].str.replace(r'\(.*?\)', '', regex=True).str.strip()
-            df_temp['Date'] = df_temp['Date'].str.replace('.', '-')
+            df_temp['Date'] = df_temp['Date'].astype(str).str.strip().str.replace(r'\(.*?\)', '', regex=True).str.replace('.', '-')
             
             def fix_year(date_str):
                 try:
                     parts = date_str.split('-')
-                    if len(parts) == 3 and len(parts[0]) == 2:
-                        return f"20{parts[0]}-{parts[1]}-{parts[2]}"
+                    if len(parts) == 3 and len(parts[0]) == 2: return f"20{parts[0]}-{parts[1]}-{parts[2]}"
                     return date_str
                 except: return date_str
             
             df_temp['Date'] = df_temp['Date'].apply(fix_year)
             df_temp['Date'] = pd.to_datetime(df_temp['Date'], errors='coerce')
-            
-            df_temp[name] = df_temp[name].astype(str).str.replace(',', '').str.replace('$', '')
-            df_temp[name] = pd.to_numeric(df_temp[name], errors='coerce')
-            
+            df_temp[name] = pd.to_numeric(df_temp[name].astype(str).str.replace(',', '').str.replace('$', ''), errors='coerce')
             df_temp.dropna(inplace=True)
             return df_temp
 
         df_qqq = extract_series(rows, idx_qqq, 'QQQ')
         df_soxl = extract_series(rows, idx_soxl, 'SOXL')
-
         df_merged = pd.merge(df_qqq, df_soxl, on='Date', how='left')
         df_merged.set_index('Date', inplace=True)
         df_merged.sort_index(inplace=True)
-        
-        if len(df_merged) == 0:
-            st.error("❌ 날짜가 일치하는 데이터가 없습니다.")
-            return None
-            
-        return df_merged
+        return df_merged if not df_merged.empty else None
 
     except Exception as e:
-        st.error(f"구글 시트 로드 실패: {e}")
+        st.error(f"데이터 로드 실패: {e}")
         return None
 
-# --- [구글 시트로 주문 데이터 전송 함수] ---
 def send_orders_to_gsheet(orders_df, sheet_url, worksheet_name="HTS주문"):
-    """
-    매수/매도 주문 데이터를 구글시트로 전송
-    HTS 자동화에서 이 시트를 읽어 주문 실행
-    """
+    client = get_gspread_client()
+    if not client: return False
     try:
-        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        
-        if "private_key" in creds_dict:
-            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-            
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        client = gspread.authorize(creds)
-        
         sheet = client.open_by_url(sheet_url)
-        
-        # 워크시트 찾기 또는 생성
-        try:
-            worksheet = sheet.worksheet(worksheet_name)
-        except gspread.WorksheetNotFound:
-            worksheet = sheet.add_worksheet(title=worksheet_name, rows=100, cols=10)
-        
-        # 기존 데이터 클리어
+        try: worksheet = sheet.worksheet(worksheet_name)
+        except: worksheet = sheet.add_worksheet(title=worksheet_name, rows=100, cols=10)
         worksheet.clear()
-        
-        # 헤더 및 데이터 업데이트
         if not orders_df.empty:
             worksheet.update([orders_df.columns.tolist()] + orders_df.values.tolist())
-        
         return True
     except Exception as e:
-        st.error(f"구글 시트 전송 실패: {e}")
+        st.error(f"주문 전송 실패: {e}")
         return False
 
+# --- [설정 저장/불러오기 로직] ---
+def save_settings_to_gsheet(sheet_url):
+    client = get_gspread_client()
+    if not client: return
+    try:
+        sheet = client.open_by_url(sheet_url)
+        try: ws = sheet.worksheet("Settings")
+        except: ws = sheet.add_worksheet(title="Settings", rows=100, cols=2)
+        
+        # 저장할 키 패턴 (안정형_s, 공격형_a)
+        data_to_save = []
+        for key in st.session_state:
+            if key.endswith('_s') or key.endswith('_a'):
+                val = st.session_state[key]
+                # 날짜 처리
+                if isinstance(val, (datetime.date, datetime.datetime)):
+                    val = val.strftime('%Y-%m-%d')
+                # 데이터프레임 처리 (비중표)
+                elif isinstance(val, pd.DataFrame):
+                    val = "DF:" + val.to_json()
+                data_to_save.append([key, str(val)])
+        
+        ws.clear()
+        if data_to_save:
+            ws.update(data_to_save)
+        st.toast("✅ 설정이 구글 시트에 저장되었습니다!", icon="💾")
+    except Exception as e:
+        st.error(f"설정 저장 실패: {e}")
+
+def load_settings_from_gsheet(sheet_url):
+    # 이미 로드된 상태면 스킵 (새로고침 시에만 실행)
+    if 'settings_loaded' in st.session_state: return
+
+    client = get_gspread_client()
+    if not client: return
+    try:
+        sheet = client.open_by_url(sheet_url)
+        try: ws = sheet.worksheet("Settings")
+        except: return # 설정 시트 없으면 패스
+        
+        rows = ws.get_all_values()
+        for row in rows:
+            if len(row) < 2: continue
+            key, val_str = row[0], row[1]
+            
+            # 타입 복원 로직
+            if key.startswith('sd_') or key.startswith('ed_'): # 날짜
+                try: st.session_state[key] = datetime.datetime.strptime(val_str, '%Y-%m-%d').date()
+                except: pass
+            elif key.startswith('w_') and val_str.startswith("DF:"): # 데이터프레임
+                try: 
+                    json_str = val_str[3:]
+                    st.session_state[key] = pd.read_json(json_str)
+                except: pass
+            else: # 숫자 (int/float)
+                try:
+                    if '.' in val_str: st.session_state[key] = float(val_str)
+                    else: st.session_state[key] = int(val_str)
+                except:
+                    st.session_state[key] = val_str # 문자열 그대로
+        
+        st.session_state['settings_loaded'] = True
+    except Exception as e:
+        # 설정 로드 실패는 조용히 넘어감 (초기 상태일 수 있음)
+        print(f"설정 로드 중 오류: {e}")
 
 # --- [유틸리티 함수] ---
 def excel_round_up(n, decimals=0):
@@ -194,15 +226,13 @@ def calculate_loc_quantity(seed_amount, order_price, close_price, buy_range, max
 def backtest_engine_web(df, params):
     df = df.copy()
     
-    # 데이터 전처리
+    # 전처리
     df['QQQ'] = pd.to_numeric(df['QQQ'], errors='coerce')
     ma_win = int(params['ma_window'])
-    
-    # 이평선 계산
     df['MA_Daily'] = df['QQQ'].rolling(window=ma_win, min_periods=1).mean()
     df['Log_Start_Price'] = df['QQQ'].shift(ma_win - 1)
 
-    # 주간 데이터 처리 (휴장일 대응)
+    # 주간 데이터 처리
     weekly_resampled = df[['QQQ', 'MA_Daily', 'Log_Start_Price']].resample('W-FRI').last()
     weekly_resampled.columns = ['QQQ_Fri', 'MA_Fri', 'Start_Price_Fri']
     weekly_resampled['Disp_Fri'] = weekly_resampled['QQQ_Fri'] / weekly_resampled['MA_Fri']
@@ -218,7 +248,6 @@ def backtest_engine_web(df, params):
     df['Log_Start_Price'] = df_mapped['Start_Price_Fri']
     df['Prev_Close'] = df['SOXL'].shift(1)
     
-    # 날짜 필터링
     start_dt = pd.to_datetime(params['start_date'])
     end_dt = pd.to_datetime(params['end_date'])
     df = df.sort_index()
@@ -251,12 +280,11 @@ def backtest_engine_web(df, params):
     for i in range(len(df)):
         row = df.iloc[i]
         date = row.name
-        start_cash = cash # 아침 예수금 기록
+        start_cash = cash
         
         today_close = row['SOXL']
         if pd.isna(today_close) or today_close <= 0: continue
-        if params.get('force_round', True): 
-            today_close = round(today_close, 2)
+        if params.get('force_round', True): today_close = round(today_close, 2)
         
         disp = row['Basis_Disp'] if not pd.isna(row['Basis_Disp']) else 1.0
         
@@ -268,7 +296,7 @@ def backtest_engine_web(df, params):
         tiers_sold = set()
         daily_net_profit_sum = 0
         
-        # 1. 매도 로직
+        # 매도
         for stock in holdings[:]:
             buy_p, days, qty, mode, tier, buy_dt = stock
             s_conf = strategy[mode]
@@ -277,10 +305,8 @@ def backtest_engine_web(df, params):
             
             is_sold = False
             reason = ""
-            if days >= s_conf['time']: 
-                is_sold = True; reason = f"TimeCut({days}d)"
-            elif today_close >= target_p: 
-                is_sold = True; reason = "Profit"
+            if days >= s_conf['time']: is_sold = True; reason = f"TimeCut({days}d)"
+            elif today_close >= target_p: is_sold = True; reason = "Profit"
             
             if is_sold:
                 holdings.remove(stock)
@@ -293,7 +319,6 @@ def backtest_engine_web(df, params):
                 
                 daily_net_profit_sum += real_profit
                 cash += net_receive
-                
                 trade_count += 1
                 if real_profit > 0: win_count += 1
                 trade_log.append({
@@ -306,7 +331,7 @@ def backtest_engine_web(df, params):
             else:
                 stock[1] = days
         
-        # 2. 매수 로직
+        # 매수
         prev_c = row['Prev_Close'] if not pd.isna(row['Prev_Close']) else today_close
         if pd.isna(prev_c): prev_c = today_close
         target_p = excel_round_down(prev_c * (1 + conf['buy'] / 100), 2)
@@ -320,13 +345,11 @@ def backtest_engine_web(df, params):
             if new_tier <= MAX_SLOTS:
                 weight_pct = 10.0
                 if 'tier_weights' in params:
-                    try:
-                        weight_pct = params['tier_weights'].loc[f'Tier {new_tier}', phase]
-                    except:
-                        weight_pct = 10.0
+                    try: weight_pct = params['tier_weights'].loc[f'Tier {new_tier}', phase]
+                    except: weight_pct = 10.0
                 
                 target_seed = seed_equity * (weight_pct / 100.0)
-                bet = min(target_seed, start_cash) # 아침 예수금 기준
+                bet = min(target_seed, start_cash)
                 bet_net_fee = bet / (1 + params['fee_rate'])
                 
                 if bet >= 10:
@@ -335,11 +358,8 @@ def backtest_engine_web(df, params):
                         final_qty = int(bet_net_fee / target_p)
                     else:
                         final_qty = calculate_loc_quantity(
-                            seed_amount=bet_net_fee,
-                            order_price=target_p,
-                            close_price=today_close,
-                            buy_range= -1 * (params['loc_range'] / 100.0),
-                            max_add_orders=int(params['add_order_cnt'])
+                            seed_amount=bet_net_fee, order_price=target_p, close_price=today_close,
+                            buy_range= -1 * (params['loc_range'] / 100.0), max_add_orders=int(params['add_order_cnt'])
                         )
                     
                     max_buyable = int(start_cash / (today_close * (1 + params['fee_rate']))) 
@@ -357,7 +377,7 @@ def backtest_engine_web(df, params):
                             'Profit': 0, 'Reason': 'LOC'
                         })
         
-        # 3. 투자금 갱신
+        # 투자금 갱신
         if daily_net_profit_sum != 0:
             rate = params['profit_rate'] if daily_net_profit_sum > 0 else params['loss_rate']
             seed_equity += daily_net_profit_sum * rate
@@ -390,19 +410,11 @@ def backtest_engine_web(df, params):
         yearly_ret.iloc[0] = (eq_series.resample('Y').last().iloc[0] / params['initial_balance'] - 1) * 100
 
     return {
-        'CAGR': round(cagr, 2),
-        'MDD': round(mdd, 2),
-        'Final': int(final_equity),
-        'Return': round(total_ret_pct, 2),
-        'WinRate': round(win_rate, 2),
-        'Trades': trade_count,
-        'Series': eq_series,
-        'Yearly': yearly_ret,
-        'Params': params,
-        'TradeLog': pd.DataFrame(trade_log),
-        'DailyLog': pd.DataFrame(daily_log),
-	    'CurrentHoldings': holdings,
-        'LastData': df.iloc[-1]
+        'CAGR': round(cagr, 2), 'MDD': round(mdd, 2), 'Final': int(final_equity),
+        'Return': round(total_ret_pct, 2), 'WinRate': round(win_rate, 2), 'Trades': trade_count,
+        'Series': eq_series, 'Yearly': yearly_ret, 'Params': params,
+        'TradeLog': pd.DataFrame(trade_log), 'DailyLog': pd.DataFrame(daily_log),
+	    'CurrentHoldings': holdings, 'LastData': df.iloc[-1]
     }
 
 # --- [UI 구성] ---
@@ -411,12 +423,14 @@ st.title("📊 쪼꼬야옹의 듀얼 전략 연구소")
 with st.sidebar:
     st.header("⚙️ 기본 데이터 연동")
     sheet_url = st.text_input("🔗 주가 데이터 시트 (읽기)", value=DEFAULT_SHEET_URL)
-    st.caption("※ 시트에 'Date', 'SOXL', 'QQQ' 데이터가 있어야 합니다.")
     
+    # [초기 실행 시 설정 로드]
+    if sheet_url:
+        load_settings_from_gsheet(sheet_url)
+
     st.markdown("---")
     st.header("📤 HTS 주문 전송 설정")
     order_sheet_url = st.text_input("🔗 주문 전송 시트 (쓰기)", value=DEFAULT_ORDER_URL, placeholder="구글시트 URL 입력")
-    st.caption("※ 서비스 계정 이메일에 편집 권한 필요")
     
     st.markdown("---")
     st.header("⚔️ 전략별 상세 설정")
@@ -427,10 +441,8 @@ with st.sidebar:
     def render_strategy_inputs(suffix, key_prefix):
         st.subheader(f"📊 {key_prefix} 기본 설정")
         
-        # [독립 설정] 초기 자본
         balance = st.number_input(f"초기 자본 ($)", value=10000, key=f"bal_{suffix}")
         
-        # [독립 설정] 기간
         today = datetime.date.today()
         c_d1, c_d2 = st.columns(2)
         start_date = c_d1.date_input("시작일", value=datetime.date(2010, 1, 1), max_value=today, key=f"sd_{suffix}")
@@ -499,13 +511,18 @@ with st.sidebar:
             'label': key_prefix
         }
 
-    # 1. 안정형 설정 (Suffix: s)
     with tab_s:
         params_s = render_strategy_inputs('s', '🛡️ 안정형')
 
-    # 2. 공격형 설정 (Suffix: a)
     with tab_a:
         params_a = render_strategy_inputs('a', '🔥 공격형')
+    
+    st.markdown("---")
+    if st.button("💾 현재 설정 저장하기", type="primary", use_container_width=True):
+        if sheet_url:
+            save_settings_to_gsheet(sheet_url)
+        else:
+            st.error("구글 시트 URL을 먼저 입력해주세요.")
 
 
 if sheet_url:
@@ -514,23 +531,16 @@ if sheet_url:
     if df is not None:
         tab_dash, tab_bt = st.tabs(["📢 듀얼 대시보드", "🚀 성과 비교"])
 
-        # ==========================================
-        # 탭 1: 듀얼 대시보드 (오늘의 주문)
-        # ==========================================
         with tab_dash:
             last_date_str = df.index[-1].strftime('%Y-%m-%d')
             st.header(f"📢 오늘의 투자 브리핑 ({last_date_str})")
             
             col_stable, col_agg = st.columns(2)
             
-            # --- 대시보드 출력용 함수 (주문 데이터 반환) ---
             def render_dashboard(col, p_params, strategy_name, stock_name="SOXL"):
-                hts_orders = []  # HTS 전송용 주문 리스트
-                
+                hts_orders = []
                 with col:
                     st.subheader(f"{strategy_name}")
-                    
-                    # [중요] 각 전략의 start_date/balance로 백테스트 실행
                     res = backtest_engine_web(df, p_params)
                     if not res:
                         st.error("데이터 부족 (기간 확인)")
@@ -552,7 +562,6 @@ if sheet_url:
                     st.caption(f"이격도: {disp:.4f} ({curr_phase}) | 초기자본: ${p_params['initial_balance']:,}")
                     st.divider()
 
-                    # 매수 주문 로직
                     n_split = int(p_params['add_order_cnt'])
                     loc_range = p_params['loc_range']
                     next_tier = min(len(current_holdings) + 1, 10)
@@ -565,7 +574,6 @@ if sheet_url:
                     except: target_weight = 10.0
                     
                     one_time_seed = seed_equity_basis * (target_weight / 100.0)
-                    
                     base_price = last_row['SOXL']
                     loc_price = excel_round_down(base_price * (1 + start_rate/100.0), 2)
 
@@ -590,196 +598,98 @@ if sheet_url:
                                     orders.append({'price': next_p, 'qty': fix_qty, 'type': 'ADD'})
                         return orders
 
-                    # [A] 매수 주문 (Buy Orders)
                     st.markdown("#### 🛒 매수 주문")
-                    
                     buy_list = []
-                    
-                    # 1. 신규 진입 계산
                     if len(current_holdings) < 10:
                         real_bet = min(one_time_seed, current_cash)
                         net_bet = real_bet / (1 + p_params['fee_rate'])
                         orders = get_smart_orders(net_bet, loc_price, -1*(loc_range/100.0), n_split)
                         rem_cash = current_cash
-                        
                         for i, o in enumerate(orders):
                             cost = o['price'] * o['qty']
                             status = "주문가능"
-                            if rem_cash >= cost:
-                                rem_cash -= cost
-                            else:
-                                status = "현금부족"
-                            
+                            if rem_cash >= cost: rem_cash -= cost
+                            else: status = "현금부족"
                             label = "⭐ MAIN" if o['type'] == 'MAIN' else f"💧 ADD #{i}"
-                            buy_list.append({
-                                "구분": label,
-                                "가격 ($)": f"{o['price']}",
-                                "수량": f"{o['qty']}",
-                                "예상금액 ($)": f"{cost:,.0f}",
-                                "상태": status
-                            })
+                            buy_list.append({"구분": label, "가격 ($)": f"{o['price']}", "수량": f"{o['qty']}", "예상금액 ($)": f"{cost:,.0f}", "상태": status})
                     
                     if buy_list:
                         st.info(f"🆕 **신규 진입 (Tier {next_tier})**")
                         st.dataframe(pd.DataFrame(buy_list), hide_index=True, use_container_width=True)
+                        for b in buy_list:
+                            if b["상태"] == "주문가능":
+                                hts_orders.append({"전략": strategy_name, "종목": stock_name, "주문유형": "매수", "주문타입": "LOC", "가격": float(b["가격 ($)"]), "수량": int(b["수량"])})
                     elif len(current_holdings) >= 10:
-                        st.warning("🚫 슬롯이 꽉 찼습니다 (추가 매수 불가)")
-                    else:
-                        st.caption("매수 조건 미달")
+                        st.warning("🚫 슬롯이 꽉 찼습니다")
+                    else: st.caption("매수 조건 미달")
 
                     st.divider()
-
-                    # [B] 매도 주문 (Sell Orders)
                     st.markdown("#### 💰 매도 주문")
-                    
-                    if not current_holdings:
-                        st.caption("보유 중인 종목이 없습니다.")
+                    if not current_holdings: st.caption("보유 중인 종목이 없습니다.")
                     else:
                         sell_list = []
                         for h in current_holdings:
-                            # h = [buy_p, days, qty, mode, tier, buy_dt]
                             buy_p, days, qty, mode, tier, buy_dt = h
-                            
-                            if mode == 'Bottom': 
-                                prof_rate = p_params['bt_prof']
-                                time_limit = p_params['bt_time']
-                            elif mode == 'Ceiling': 
-                                prof_rate = p_params['cl_prof']
-                                time_limit = p_params['cl_time']
-                            else: 
-                                prof_rate = p_params['md_prof']
-                                time_limit = p_params['md_time']
+                            if mode == 'Bottom': prof_rate = p_params['bt_prof']; time_limit = p_params['bt_time']
+                            elif mode == 'Ceiling': prof_rate = p_params['cl_prof']; time_limit = p_params['cl_time']
+                            else: prof_rate = p_params['md_prof']; time_limit = p_params['md_time']
                             
                             target_sell_p = excel_round_up(buy_p * (1 + prof_rate), 2)
                             curr_return = (last_row['SOXL'] - buy_p) / buy_p * 100
                             current_hold_days = days + 1
                             
-                            # 타임컷 로직 적용
                             if current_hold_days >= time_limit:
-                                order_type = "🚨 MOC (시장가)"
-                                order_price = "Market"
-                                note = "TimeCut 발동"
+                                order_type = "🚨 MOC (시장가)"; order_price = "Market"; note = "TimeCut 발동"
                             else:
-                                order_type = "🎯 LOC (지정가)"
-                                order_price = f"${target_sell_p}"
-                                note = f"{current_hold_days}/{time_limit}일"
+                                order_type = "🎯 LOC (지정가)"; order_price = f"${target_sell_p}"; note = f"{current_hold_days}/{time_limit}일"
 
-                            sell_list.append({
-                                "티어": f"T{tier}",
-                                "평단가": f"${buy_p}",
-                                "수익률": f"{curr_return:.2f}%",
-                                "주문타입": order_type,
-                                "주문가격": order_price,
-                                "비고": note
-                            })
-                            
-                            # HTS 전송용 데이터 수집 (전략 구분 추가)
-                            hts_orders.append({
-                                "전략": strategy_name,
-                                "종목": stock_name,
-                                "주문유형": "매도",
-                                "주문타입": "MOC" if "MOC" in order_type else "LOC",
-                                "가격": target_sell_p if "LOC" in order_type else 0,
-                                "수량": qty
-                            })
+                            sell_list.append({"티어": f"T{tier}", "평단가": f"${buy_p}", "수익률": f"{curr_return:.2f}%", "주문타입": order_type, "주문가격": order_price, "비고": note})
+                            hts_orders.append({"전략": strategy_name, "종목": stock_name, "주문유형": "매도", "주문타입": "MOC" if "MOC" in order_type else "LOC", "가격": target_sell_p if "LOC" in order_type else 0, "수량": qty})
                         
-                        # 스타일링 함수 (타임컷 빨간색 강조)
                         def highlight_moc(row):
-                            if "MOC" in row['주문타입']:
-                                return ['background-color: #ffcccc; color: black'] * len(row)
-                            return [''] * len(row)
-
+                            return ['background-color: #ffcccc; color: black'] * len(row) if "MOC" in row['주문타입'] else [''] * len(row)
                         st.dataframe(pd.DataFrame(sell_list).style.apply(highlight_moc, axis=1), hide_index=True, use_container_width=True)
-                    
-                    # 매수 주문도 HTS 데이터에 추가 (전략 구분 추가)
-                    if buy_list:
-                        for b in buy_list:
-                            if b["상태"] == "주문가능":
-                                hts_orders.append({
-                                    "전략": strategy_name,
-                                    "종목": stock_name,
-                                    "주문유형": "매수",
-                                    "주문타입": "LOC",
-                                    "가격": float(b["가격 ($)"]),
-                                    "수량": int(b["수량"])
-                                })
-                
                 return hts_orders
 
             orders_stable = render_dashboard(col_stable, params_s, "🛡️ 안정형 전략")
             orders_agg = render_dashboard(col_agg, params_a, "🔥 공격형 전략")
             
-            # HTS 전송 섹션
             st.divider()
             st.subheader("📤 HTS 자동화 연동")
-            
-            # 안정형/공격형 분리 표시
             col_hts1, col_hts2 = st.columns(2)
-            
             with col_hts1:
                 st.markdown("#### 🛡️ 안정형 (탭1)")
-                if orders_stable:
-                    df_stable = pd.DataFrame(orders_stable)
-                    st.dataframe(df_stable, hide_index=True, use_container_width=True)
-                else:
-                    st.caption("주문 없음")
-            
+                if orders_stable: st.dataframe(pd.DataFrame(orders_stable), hide_index=True, use_container_width=True)
+                else: st.caption("주문 없음")
             with col_hts2:
                 st.markdown("#### 🔥 공격형 (탭2)")
-                if orders_agg:
-                    df_agg = pd.DataFrame(orders_agg)
-                    st.dataframe(df_agg, hide_index=True, use_container_width=True)
-                else:
-                    st.caption("주문 없음")
+                if orders_agg: st.dataframe(pd.DataFrame(orders_agg), hide_index=True, use_container_width=True)
+                else: st.caption("주문 없음")
             
             st.divider()
-            
-            # 전송 옵션
             all_orders = orders_stable + orders_agg
             if all_orders:
                 orders_df = pd.DataFrame(all_orders)
-                
-                # 주문 시트 URL 확인
-                if not order_sheet_url:
-                    st.warning("⚠️ 사이드바에서 '주문 전송 시트' URL을 입력해주세요.")
+                if not order_sheet_url: st.warning("⚠️ 사이드바에서 '주문 전송 시트' URL을 입력해주세요.")
                 else:
                     col_btn1, col_btn2 = st.columns(2)
-                    
                     with col_btn1:
                         if st.button("🚀 지금 전송", type="primary", use_container_width=True):
-                            if send_orders_to_gsheet(orders_df, order_sheet_url, "HTS주문"):
-                                st.success("✅ 전송 완료!")
-                            else:
-                                st.error("❌ 전송 실패 (권한 확인 필요)")
-                    
+                            if send_orders_to_gsheet(orders_df, order_sheet_url, "HTS주문"): st.success("✅ 전송 완료!")
+                            else: st.error("❌ 전송 실패")
                     with col_btn2:
-                        # 자동 전송 시간 설정
                         auto_time = st.time_input("⏰ 자동 전송 시간", value=datetime.time(22, 30))
-                        
-                        # 현재 시간과 비교하여 자동 전송
                         now = datetime.datetime.now().time()
-                        if 'last_auto_send' not in st.session_state:
-                            st.session_state.last_auto_send = None
-                        
+                        if 'last_auto_send' not in st.session_state: st.session_state.last_auto_send = None
                         today_str = datetime.date.today().isoformat()
-                        
-                        # 오늘 이미 전송했는지 확인
-                        if st.session_state.last_auto_send == today_str:
-                            st.info(f"✅ 오늘 {auto_time} 자동 전송 완료")
+                        if st.session_state.last_auto_send == today_str: st.info(f"✅ 오늘 {auto_time} 자동 전송 완료")
                         elif now >= auto_time:
-                            # 자동 전송 실행
                             if send_orders_to_gsheet(orders_df, order_sheet_url, "HTS주문"):
                                 st.session_state.last_auto_send = today_str
                                 st.success(f"⏰ {auto_time} 자동 전송 완료!")
-                        else:
-                            st.caption(f"⏳ {auto_time}에 자동 전송 예정")
-            else:
-                st.caption("전송할 주문 데이터가 없습니다.")
+                        else: st.caption(f"⏳ {auto_time}에 자동 전송 예정")
+            else: st.caption("전송할 주문 데이터가 없습니다.")
 
-
-        # ==========================================
-        # 탭 2: 성과 비교 (백테스트)
-        # ==========================================
         with tab_bt:
             st.info("💡 각 전략의 설정된 기간과 자본금으로 시뮬레이션을 실행합니다.")
             if st.button("🚀 두 전략 비교 실행", type='primary'):
@@ -788,7 +698,6 @@ if sheet_url:
                     res_a = backtest_engine_web(df, params_a)
                 
                 if res_s and res_a:
-                    # 1. 지표 비교 테이블
                     comp_data = {
                         '구분': ['기간', '초기 자본', '최종 자산', '수익률', 'CAGR', 'MDD', '승률'],
                         '🛡️ 안정형': [
@@ -803,20 +712,12 @@ if sheet_url:
                         ]
                     }
                     st.table(pd.DataFrame(comp_data).set_index('구분'))
-                    
-                    # 2. 그래프 겹쳐 그리기 (기간이 달라도 날짜축 기준으로 자동 매핑됨)
                     st.subheader("📈 자산 성장 곡선 비교")
-                    chart_df = pd.DataFrame({
-                        'Stable': res_s['Series'],
-                        'Aggressive': res_a['Series']
-                    })
+                    chart_df = pd.DataFrame({'Stable': res_s['Series'], 'Aggressive': res_a['Series']})
                     st.line_chart(chart_df)
-                    
-                    # 3. 상세 로그 다운로드
                     c1, c2 = st.columns(2)
                     c1.download_button("📥 안정형 로그", res_s['TradeLog'].to_csv().encode('utf-8-sig'), "stable_log.csv")
                     c2.download_button("📥 공격형 로그", res_a['TradeLog'].to_csv().encode('utf-8-sig'), "agg_log.csv")
 
 else:
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
-
