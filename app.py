@@ -545,41 +545,55 @@ if sheet_url:
                         return orders
 
                     # [A] 매수 주문 (Buy Orders)
-                    st.markdown("#### 🛒 매수 주문 (Buy Orders)")
+                    st.markdown("#### 🛒 매수 주문")
+                    
+                    buy_list = []
+                    
+                    # 1. 신규 진입 계산
                     if len(current_holdings) < 10:
-                        st.info(f"🆕 **신규 진입 (Tier {next_tier})**")
                         real_bet = min(one_time_seed, current_cash)
                         net_bet = real_bet / (1 + p_params['fee_rate'])
-                        
                         orders = get_smart_orders(net_bet, loc_price, -1*(loc_range/100.0), n_split)
-                        
                         rem_cash = current_cash
-                        total_est = 0
-                        for o in orders:
-                            cost = o['price']*o['qty']
-                            total_est += cost
+                        
+                        for i, o in enumerate(orders):
+                            cost = o['price'] * o['qty']
+                            status = "주문가능"
                             if rem_cash >= cost:
                                 rem_cash -= cost
-                                icon = "⭐" if o['type'] == 'MAIN' else "💧"
-                                st.write(f"{icon} **${o['price']}** × {o['qty']}개")
                             else:
-                                st.caption(f"현금부족 (${o['price']})")
-                        st.caption(f"(예상 투입: ${total_est:,.0f})")
-                    else:
-                        st.warning("🚫 슬롯이 꽉 찼습니다 (추가 매수 불가)")
+                                status = "현금부족"
+                            
+                            label = "⭐ MAIN" if o['type'] == 'MAIN' else f"💧 ADD #{i}"
+                            buy_list.append({
+                                "구분": label,
+                                "가격 ($)": f"{o['price']}",
+                                "수량": f"{o['qty']}",
+                                "예상금액 ($)": f"{cost:,.0f}",
+                                "상태": status
+                            })
                     
+                    if buy_list:
+                        st.info(f"🆕 **신규 진입 (Tier {next_tier})**")
+                        st.dataframe(pd.DataFrame(buy_list), hide_index=True, use_container_width=True)
+                    elif len(current_holdings) >= 10:
+                        st.warning("🚫 슬롯이 꽉 찼습니다 (추가 매수 불가)")
+                    else:
+                        st.caption("매수 조건 미달")
+
                     st.divider()
 
                     # [B] 매도 주문 (Sell Orders)
-                    st.markdown("#### 💰 매도 주문 (Sell Orders)")
+                    st.markdown("#### 💰 매도 주문")
+                    
                     if not current_holdings:
                         st.caption("보유 중인 종목이 없습니다.")
                     else:
+                        sell_list = []
                         for h in current_holdings:
                             # h = [buy_p, days, qty, mode, tier, buy_dt]
                             buy_p, days, qty, mode, tier, buy_dt = h
                             
-                            # 모드별 설정 가져오기
                             if mode == 'Bottom': 
                                 prof_rate = p_params['bt_prof']
                                 time_limit = p_params['bt_time']
@@ -592,23 +606,34 @@ if sheet_url:
                             
                             target_sell_p = excel_round_up(buy_p * (1 + prof_rate), 2)
                             curr_return = (last_row['SOXL'] - buy_p) / buy_p * 100
-                            
-                            # 오늘 기준 보유일수 = 현재 보유일 + 1
                             current_hold_days = days + 1
                             
-                            with st.container(border=True):
-                                c1, c2 = st.columns([2, 1])
-                                c1.markdown(f"**Tier {tier}** ({mode})")
-                                c1.caption(f"평단: ${buy_p} | 수량: {qty}개 | 수익률: {curr_return:.2f}%")
-                                
-                                # 타임컷 경고 (존버일 초과 시)
-                                if current_hold_days >= time_limit:
-                                    st.error(f"🚨 **TimeCut 발동! ({current_hold_days}/{time_limit}일)**")
-                                    st.markdown(f"👉 **시장가/LOC 매도 요망**")
-                                else:
-                                    st.success(f"🎯 **지정가 매도 주문**")
-                                    st.markdown(f"가격: **${target_sell_p}**")
-                                    st.caption(f"존버: {current_hold_days}/{time_limit}일")
+                            # 타임컷 로직 적용
+                            if current_hold_days >= time_limit:
+                                order_type = "🚨 MOC (시장가)"
+                                order_price = "Market"
+                                note = "TimeCut 발동"
+                            else:
+                                order_type = "🎯 LOC (지정가)"
+                                order_price = f"${target_sell_p}"
+                                note = f"{current_hold_days}/{time_limit}일"
+
+                            sell_list.append({
+                                "티어": f"T{tier}",
+                                "평단가": f"${buy_p}",
+                                "수익률": f"{curr_return:.2f}%",
+                                "주문타입": order_type,
+                                "주문가격": order_price,
+                                "비고": note
+                            })
+                        
+                        # 스타일링 함수 (타임컷 빨간색 강조)
+                        def highlight_moc(row):
+                            if "MOC" in row['주문타입']:
+                                return ['background-color: #ffcccc; color: black'] * len(row)
+                            return [''] * len(row)
+
+                        st.dataframe(pd.DataFrame(sell_list).style.apply(highlight_moc, axis=1), hide_index=True, use_container_width=True)
 
             render_dashboard(col_stable, params_s, "🛡️ 안정형 전략")
             render_dashboard(col_agg, params_a, "🔥 공격형 전략")
