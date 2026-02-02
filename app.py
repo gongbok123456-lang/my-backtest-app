@@ -25,7 +25,7 @@ if 'trial_count' not in st.session_state:
     st.session_state.trial_count = 0
 if 'last_backtest_result' not in st.session_state:
     st.session_state.last_backtest_result = None
-if 'editor_ver' not in st.session_state: # [추가] 에디터 초기화 버전 관리
+if 'editor_ver' not in st.session_state:
     st.session_state.editor_ver = 0
 
 # --- [구글 시트 연동 및 설정 관리 함수] ---
@@ -52,7 +52,6 @@ def load_data_from_gsheet(url):
         
         if not rows: return None
 
-        # 헤더 찾기
         header_row_idx = -1
         idx_qqq = -1
         idx_soxl = -1
@@ -116,7 +115,7 @@ def send_orders_to_gsheet(orders_df, sheet_url, worksheet_name="HTS주문"):
         st.error(f"주문 전송 실패: {e}")
         return False
 
-# --- [설정 저장/불러오기 로직 (오류 수정본)] ---
+# --- [설정 저장/불러오기 로직] ---
 def save_settings_to_gsheet(sheet_url):
     client = get_gspread_client()
     if not client: return
@@ -126,9 +125,6 @@ def save_settings_to_gsheet(sheet_url):
         except: ws = sheet.add_worksheet(title="Settings", rows=100, cols=2)
         
         data_to_save = []
-        
-        # 1. 일반 변수 저장
-        # (w_로 시작하는 위젯 키는 제외하고, 실제 값만 저장)
         for key in st.session_state:
             if (key.endswith('_s') or key.endswith('_a')) and not key.startswith('w_') and not key.startswith('base_w_') and not key.startswith('current_w_'):
                 val = st.session_state[key]
@@ -136,15 +132,12 @@ def save_settings_to_gsheet(sheet_url):
                     val = val.strftime('%Y-%m-%d')
                 data_to_save.append([key, str(val)])
         
-        # 2. 데이터프레임(비중표) 저장
-        # 에디터의 결과가 저장된 'current_w_s', 'current_w_a'를 사용
         for suffix in ['s', 'a']:
             current_key = f"current_w_{suffix}"
             if current_key in st.session_state:
                 df_val = st.session_state[current_key]
                 if isinstance(df_val, pd.DataFrame):
                     val = "DF:" + df_val.to_json()
-                    # 저장할 때는 깔끔하게 'w_s', 'w_a'라는 이름으로 저장
                     data_to_save.append([f"w_{suffix}", val])
 
         ws.clear()
@@ -171,20 +164,15 @@ def load_settings_from_gsheet(sheet_url):
             if len(row) < 2: continue
             key, val_str = row[0], row[1]
             
-            # [수정] 데이터프레임 처리
             if (key == 'w_s' or key == 'w_a') and val_str.startswith("DF:"):
                 try: 
-                    suffix = key.split('_')[-1] # s or a
+                    suffix = key.split('_')[-1]
                     json_str = val_str[3:]
                     loaded_df = pd.read_json(json_str)
-                    
-                    # 베이스 변수에 저장
-                    base_key = f"base_w_{suffix}" 
-                    st.session_state[base_key] = loaded_df
+                    st.session_state[f"base_w_{suffix}"] = loaded_df
                     df_loaded_flag = True
                 except: pass
             else:
-                # 일반 변수 처리
                 try:
                     if key.startswith('sd_') or key.startswith('ed_'):
                         st.session_state[key] = datetime.datetime.strptime(val_str, '%Y-%m-%d').date()
@@ -194,7 +182,6 @@ def load_settings_from_gsheet(sheet_url):
                 except:
                     st.session_state[key] = val_str
         
-        # 데이터가 로드되었으면 에디터 버전을 올려서 강제 리셋 (충돌 방지)
         if df_loaded_flag:
             st.session_state.editor_ver += 1
 
@@ -248,13 +235,11 @@ def calculate_loc_quantity(seed_amount, order_price, close_price, buy_range, max
 def backtest_engine_web(df, params):
     df = df.copy()
     
-    # 전처리
     df['QQQ'] = pd.to_numeric(df['QQQ'], errors='coerce')
     ma_win = int(params['ma_window'])
     df['MA_Daily'] = df['QQQ'].rolling(window=ma_win, min_periods=1).mean()
     df['Log_Start_Price'] = df['QQQ'].shift(ma_win - 1)
 
-    # 주간 데이터 처리
     weekly_resampled = df[['QQQ', 'MA_Daily', 'Log_Start_Price']].resample('W-FRI').last()
     weekly_resampled.columns = ['QQQ_Fri', 'MA_Fri', 'Start_Price_Fri']
     weekly_resampled['Disp_Fri'] = weekly_resampled['QQQ_Fri'] / weekly_resampled['MA_Fri']
@@ -399,7 +384,6 @@ def backtest_engine_web(df, params):
                             'Profit': 0, 'Reason': 'LOC'
                         })
         
-        # 투자금 갱신
         if daily_net_profit_sum != 0:
             rate = params['profit_rate'] if daily_net_profit_sum > 0 else params['loss_rate']
             seed_equity += daily_net_profit_sum * rate
@@ -450,7 +434,6 @@ with st.sidebar:
     st.header("📤 HTS 주문 전송 설정")
     order_sheet_url = st.text_input("🔗 주문 전송 시트 (쓰기)", value=DEFAULT_ORDER_URL, placeholder="구글시트 URL 입력")
     
-    # [설정 로드 - 쓰기 가능한 주문 시트 사용]
     if order_sheet_url:
         load_settings_from_gsheet(order_sheet_url)
     
@@ -459,54 +442,63 @@ with st.sidebar:
     
     tab_s, tab_a = st.tabs(["🛡️ 안정형", "🔥 공격형"])
 
-    # === [함수] 파라미터 입력 위젯 생성기 ===
     def render_strategy_inputs(suffix, key_prefix):
         st.subheader(f"📊 {key_prefix} 기본 설정")
         
-        balance = st.number_input(f"초기 자본 ($)", value=10000, key=f"bal_{suffix}")
+        # [핵심 수정] value를 st.session_state에서 가져오도록 변경 (충돌 방지)
+        k_bal = f"bal_{suffix}"
+        balance = st.number_input(f"초기 자본 ($)", value=st.session_state.get(k_bal, 10000), key=k_bal)
         
         today = datetime.date.today()
         c_d1, c_d2 = st.columns(2)
-        start_date = c_d1.date_input("시작일", value=datetime.date(2010, 1, 1), max_value=today, key=f"sd_{suffix}")
-        end_date = c_d2.date_input("종료일", value=today, max_value=today, key=f"ed_{suffix}")
+        k_sd = f"sd_{suffix}"; k_ed = f"ed_{suffix}"
+        start_date = c_d1.date_input("시작일", value=st.session_state.get(k_sd, datetime.date(2010, 1, 1)), max_value=today, key=k_sd)
+        end_date = c_d2.date_input("종료일", value=st.session_state.get(k_ed, today), max_value=today, key=k_ed)
         
         st.markdown("---")
         st.write("⚙️ **파라미터 설정**")
         
-        fee = st.number_input("수수료 (%)", value=0.07, step=0.01, format="%.2f", key=f"fee_{suffix}")
+        k_fee = f"fee_{suffix}"
+        fee = st.number_input("수수료 (%)", value=st.session_state.get(k_fee, 0.07), step=0.01, format="%.2f", key=k_fee)
         
-        profit_rate = st.slider("이익 복리율 (%)", 0, 100, 70, key=f"pr_{suffix}")
-        loss_rate = st.slider("손실 복리율 (%)", 0, 100, 50, key=f"lr_{suffix}")
+        k_pr = f"pr_{suffix}"; k_lr = f"lr_{suffix}"
+        profit_rate = st.slider("이익 복리율 (%)", 0, 100, st.session_state.get(k_pr, 70), key=k_pr)
+        loss_rate = st.slider("손실 복리율 (%)", 0, 100, st.session_state.get(k_lr, 50), key=k_lr)
         
         c_loc1, c_loc2 = st.columns(2)
-        add_order_cnt = c_loc1.number_input("분할 횟수", value=4, min_value=1, key=f"add_{suffix}") 
-        loc_range = c_loc2.number_input("LOC 범위 (-%)", value=20.0, min_value=0.0, key=f"rng_{suffix}")
-        ma_win = st.number_input("이평선 (MA)", 50, 300, 200, key=f"ma_{suffix}")
+        k_add = f"add_{suffix}"; k_rng = f"rng_{suffix}"
+        add_order_cnt = c_loc1.number_input("분할 횟수", value=st.session_state.get(k_add, 4), min_value=1, key=k_add) 
+        loc_range = c_loc2.number_input("LOC 범위 (-%)", value=st.session_state.get(k_rng, 20.0), min_value=0.0, key=k_rng)
+        
+        k_ma = f"ma_{suffix}"
+        ma_win = st.number_input("이평선 (MA)", 50, 300, st.session_state.get(k_ma, 200), key=k_ma)
 
         st.markdown("##### 📉 바닥 (Bottom)")
         c1, c2 = st.columns(2)
-        bt_cond = c1.number_input("기준 이격", 0.8, 1.0, 0.90, step=0.01, key=f"bc_{suffix}")
-        bt_buy = c2.number_input("매수점%", -30.0, 30.0, 15.0, step=0.1, key=f"bb_{suffix}")
-        bt_prof = c1.number_input("익절%", 0.0, 100.0, 2.5, step=0.1, key=f"bp_{suffix}")
-        bt_time = c2.number_input("존버일", 1, 100, 10, key=f"bt_{suffix}")
+        k_bc=f"bc_{suffix}"; k_bb=f"bb_{suffix}"; k_bp=f"bp_{suffix}"; k_bt=f"bt_{suffix}"
+        bt_cond = c1.number_input("기준 이격", 0.8, 1.0, st.session_state.get(k_bc, 0.90), step=0.01, key=k_bc)
+        bt_buy = c2.number_input("매수점%", -30.0, 30.0, st.session_state.get(k_bb, 15.0), step=0.1, key=k_bb)
+        bt_prof = c1.number_input("익절%", 0.0, 100.0, st.session_state.get(k_bp, 2.5), step=0.1, key=k_bp)
+        bt_time = c2.number_input("존버일", 1, 100, st.session_state.get(k_bt, 10), key=k_bt)
 
         st.markdown("##### ➖ 중간 (Middle)")
         c3, c4 = st.columns(2)
-        md_buy = c3.number_input("매수점%", -30.0, 30.0, -0.01, step=0.1, key=f"mb_{suffix}")
-        md_prof = c4.number_input("익절%", 0.0, 100.0, 2.8, step=0.1, key=f"mp_{suffix}")
-        md_time = c3.number_input("존버일", 1, 100, 15, key=f"mt_{suffix}")
+        k_mb=f"mb_{suffix}"; k_mp=f"mp_{suffix}"; k_mt=f"mt_{suffix}"
+        md_buy = c3.number_input("매수점%", -30.0, 30.0, st.session_state.get(k_mb, -0.01), step=0.1, key=k_mb)
+        md_prof = c4.number_input("익절%", 0.0, 100.0, st.session_state.get(k_mp, 2.8), step=0.1, key=k_mp)
+        md_time = c3.number_input("존버일", 1, 100, st.session_state.get(k_mt, 15), key=k_mt)
 
         st.markdown("##### 📈 천장 (Ceiling)")
         c5, c6 = st.columns(2)
-        cl_cond = c5.number_input("기준 이격", 1.0, 1.5, 1.10, step=0.01, key=f"cc_{suffix}")
-        cl_buy = c6.number_input("매수점%", -30.0, 30.0, -0.1, step=0.1, key=f"cb_{suffix}")
-        cl_prof = c5.number_input("익절%", 0.0, 100.0, 1.5, step=0.1, key=f"cp_{suffix}")
-        cl_time = c6.number_input("존버일", 1, 100, 40, key=f"ct_{suffix}")
+        k_cc=f"cc_{suffix}"; k_cb=f"cb_{suffix}"; k_cp=f"cp_{suffix}"; k_ct=f"ct_{suffix}"
+        cl_cond = c5.number_input("기준 이격", 1.0, 1.5, st.session_state.get(k_cc, 1.10), step=0.01, key=k_cc)
+        cl_buy = c6.number_input("매수점%", -30.0, 30.0, st.session_state.get(k_cb, -0.1), step=0.1, key=k_cb)
+        cl_prof = c5.number_input("익절%", 0.0, 100.0, st.session_state.get(k_cp, 1.5), step=0.1, key=k_cp)
+        cl_time = c6.number_input("존버일", 1, 100, st.session_state.get(k_ct, 40), key=k_ct)
         
         st.markdown("---")
         st.write("⚖️ **티어별 비중**")
         
-        # [핵심 수정] 버전 관리(v)가 포함된 유니크 키 사용 -> 충돌 완벽 해결
         base_key = f"base_w_{suffix}"
         if base_key in st.session_state:
             initial_data = st.session_state[base_key]
@@ -518,7 +510,6 @@ with st.sidebar:
             initial_data = pd.DataFrame(default_data).set_index('Tier')
             st.session_state[base_key] = initial_data
 
-        # unique_key: 불러오기 할 때마다 키가 바뀌어서(v1, v2..) 에디터가 새로 그려짐
         current_ver = st.session_state.editor_ver
         unique_key = f"w_{suffix}_v{current_ver}"
         
@@ -531,8 +522,6 @@ with st.sidebar:
                 "Ceiling": st.column_config.NumberColumn("천장%", format="%.1f%%"),
             }, use_container_width=True
         )
-        
-        # 저장용 최신 데이터를 별도 키에 백업 (저장 버튼 누를 때 사용)
         st.session_state[f"current_w_{suffix}"] = edited_w
 
         return {
@@ -716,7 +705,7 @@ if sheet_url:
                             if send_orders_to_gsheet(orders_df, order_sheet_url, "HTS주문"): st.success("✅ 전송 완료!")
                             else: st.error("❌ 전송 실패")
                     with col_btn2:
-                        auto_time = st.time_input("⏰ 자동 전송 시간", value=datetime.time(22, 30))
+                        auto_time = st.time_input("⏰ 자동 전송 시간", value=datetime.time(18, 00))
                         now = datetime.datetime.now().time()
                         if 'last_auto_send' not in st.session_state: st.session_state.last_auto_send = None
                         today_str = datetime.date.today().isoformat()
