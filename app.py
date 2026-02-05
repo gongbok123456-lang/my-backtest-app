@@ -17,11 +17,22 @@ DEFAULT_ORDER_URL = "https://docs.google.com/spreadsheets/d/1PpgexM79XVvr23sVfi_
 # --- [페이지 설정] ---
 st.set_page_config(page_title="쪼꼬야옹 백테스트 연구소", page_icon="📈", layout="wide")
 
-# --- [세션 상태 초기화] ---
+# --- [세션 상태 초기화 및 데이터 무결성 검사] ---
+required_columns = ['Type', 'Bot_Ref', 'Ceil_Ref', 'B_Buy', 'B_Time', 'Score'] # 필수 컬럼 예시
+
 if 'opt_results' not in st.session_state: 
     st.session_state.opt_results = pd.DataFrame()
+
+# [안전장치 1] 리스트라면 데이터프레임으로 변환
 if isinstance(st.session_state.opt_results, list):
     st.session_state.opt_results = pd.DataFrame(st.session_state.opt_results)
+
+# [안전장치 2] 데이터 구조가 바뀌었다면 초기화 (KeyError 방지)
+if not st.session_state.opt_results.empty:
+    # 현재 코드에서 사용하는 핵심 컬럼이 있는지 확인
+    if 'B_Time' not in st.session_state.opt_results.columns:
+        st.session_state.opt_results = pd.DataFrame()
+        st.toast("⚠️ 데이터 구조 변경으로 시뮬레이션 기록이 초기화되었습니다.")
 
 if 'trial_count' not in st.session_state: st.session_state.trial_count = 0
 if 'last_backtest_result' not in st.session_state: st.session_state.last_backtest_result = None
@@ -700,30 +711,38 @@ if sheet_url:
                     mc_start = c_d1.date_input("시작일", value=datetime.date(2010,1,1))
                     mc_end = c_d2.date_input("종료일", value=datetime.date.today())
                     
-                    st.markdown("#### 🎯 랜덤 범위 설정 (Bottom 위주)")
+                    st.markdown("#### 🎯 랜덤 범위 설정 (수기 입력)")
                     
+                    # 1. 진입/탈출 기준
                     with st.expander("1. 진입/탈출 기준 (Threshold)", expanded=True):
+                        c1, c2 = st.columns(2)
                         if mc_type == 'RSI':
-                            r_bc_min, r_bc_max = st.slider("바닥 기준 (RSI)", 20, 50, (25, 35))
-                            r_cc_min, r_cc_max = st.slider("천장 기준 (RSI)", 60, 90, (70, 80))
+                            r_bc_min = c1.number_input("바닥 기준(Min)", value=25.0); r_bc_max = c2.number_input("바닥 기준(Max)", value=35.0)
+                            r_cc_min = c1.number_input("천장 기준(Min)", value=70.0); r_cc_max = c2.number_input("천장 기준(Max)", value=80.0)
                         else:
-                            r_bc_min, r_bc_max = st.slider("바닥 기준 (이격도)", 0.8, 1.0, (0.85, 0.95))
-                            r_cc_min, r_cc_max = st.slider("천장 기준 (이격도)", 1.0, 1.3, (1.05, 1.15))
+                            r_bc_min = c1.number_input("바닥 기준(Min)", value=0.85); r_bc_max = c2.number_input("바닥 기준(Max)", value=0.95)
+                            r_cc_min = c1.number_input("천장 기준(Min)", value=1.05); r_cc_max = c2.number_input("천장 기준(Max)", value=1.15)
 
+                    # 2. 바닥 설정
                     with st.expander("2. 바닥 (Bottom) 설정 범위", expanded=False):
-                        r_bb_min, r_bb_max = st.slider("매수%", 0.0, 30.0, (10.0, 20.0), key="r_bb")
-                        r_bp_min, r_bp_max = st.slider("익절%", 1.0, 20.0, (3.0, 10.0), key="r_bp")
-                        r_bt_min, r_bt_max = st.slider("존버일(TimeCut)", 5, 100, (10, 40), key="r_bt")
+                        c1, c2 = st.columns(2)
+                        r_bb_min = c1.number_input("바닥 매수%(Min)", value=10.0); r_bb_max = c2.number_input("바닥 매수%(Max)", value=20.0)
+                        r_bp_min = c1.number_input("바닥 익절%(Min)", value=3.0); r_bp_max = c2.number_input("바닥 익절%(Max)", value=10.0)
+                        r_bt_min = c1.number_input("바닥 존버(Min)", value=10, step=1); r_bt_max = c2.number_input("바닥 존버(Max)", value=40, step=1)
 
+                    # 3. 중간 설정
                     with st.expander("3. 중간 (Middle) 설정 범위", expanded=False):
-                        r_mb_min, r_mb_max = st.slider("매수%", -10.0, 10.0, (-2.0, 2.0), key="r_mb")
-                        r_mp_min, r_mp_max = st.slider("익절%", 1.0, 20.0, (2.0, 8.0), key="r_mp")
-                        r_mt_min, r_mt_max = st.slider("존버일(TimeCut)", 5, 100, (10, 30), key="r_mt")
+                        c1, c2 = st.columns(2)
+                        r_mb_min = c1.number_input("중간 매수%(Min)", value=-2.0); r_mb_max = c2.number_input("중간 매수%(Max)", value=2.0)
+                        r_mp_min = c1.number_input("중간 익절%(Min)", value=2.0); r_mp_max = c2.number_input("중간 익절%(Max)", value=8.0)
+                        r_mt_min = c1.number_input("중간 존버(Min)", value=10, step=1); r_mt_max = c2.number_input("중간 존버(Max)", value=30, step=1)
 
+                    # 4. 천장 설정
                     with st.expander("4. 천장 (Ceiling) 설정 범위", expanded=False):
-                        r_cb_min, r_cb_max = st.slider("매수%", -20.0, 10.0, (-10.0, -5.0), key="r_cb")
-                        r_cp_min, r_cp_max = st.slider("익절%", 0.5, 10.0, (1.0, 5.0), key="r_cp")
-                        r_ct_min, r_ct_max = st.slider("존버일(TimeCut)", 5, 100, (20, 60), key="r_ct")
+                        c1, c2 = st.columns(2)
+                        r_cb_min = c1.number_input("천장 매수%(Min)", value=-10.0); r_cb_max = c2.number_input("천장 매수%(Max)", value=-5.0)
+                        r_cp_min = c1.number_input("천장 익절%(Min)", value=1.0); r_cp_max = c2.number_input("천장 익절%(Max)", value=5.0)
+                        r_ct_min = c1.number_input("천장 존버(Min)", value=20, step=1); r_ct_max = c2.number_input("천장 존버(Max)", value=60, step=1)
 
                     mc_run = st.form_submit_button("🎲 시뮬레이션 시작")
                 
@@ -742,15 +761,15 @@ if sheet_url:
                         
                         rnd_bb = random.uniform(r_bb_min, r_bb_max)
                         rnd_bp = random.uniform(r_bp_min, r_bp_max)
-                        rnd_bt = random.randint(r_bt_min, r_bt_max)
+                        rnd_bt = random.randint(int(r_bt_min), int(r_bt_max))
                         
                         rnd_mb = random.uniform(r_mb_min, r_mb_max)
                         rnd_mp = random.uniform(r_mp_min, r_mp_max)
-                        rnd_mt = random.randint(r_mt_min, r_mt_max)
+                        rnd_mt = random.randint(int(r_mt_min), int(r_mt_max))
                         
                         rnd_cb = random.uniform(r_cb_min, r_cb_max)
                         rnd_cp = random.uniform(r_cp_min, r_cp_max)
-                        rnd_ct = random.randint(r_ct_min, r_ct_max)
+                        rnd_ct = random.randint(int(r_ct_min), int(r_ct_max))
                         
                         # 파라미터 적용 (날짜 적용 포함)
                         mc_params = params_s.copy()
@@ -780,6 +799,7 @@ if sheet_url:
                     if new_results:
                         new_df = pd.DataFrame(new_results)
                         if not st.session_state.opt_results.empty:
+                            # 컬럼 호환성 체크 (이전 데이터와 컬럼이 다르면 초기화)
                             if list(new_df.columns) != list(st.session_state.opt_results.columns):
                                 st.session_state.opt_results = new_df
                             else:
@@ -797,9 +817,9 @@ if sheet_url:
                     best = st.session_state.opt_results.iloc[0]
                     with st.expander("🌟 [BEST] 상세 파라미터 보기", expanded=True):
                         c1, c2, c3 = st.columns(3)
-                        c1.info(f"**📉 바닥 모드**\n- 기준: {best['Bot_Ref']}\n- 매수: {best['B_Buy']}%\n- 익절: {best['B_Prof']}%\n- 손절일: {best['B_Time']}일")
-                        c2.warning(f"**➖ 중간 모드**\n- 매수: {best['M_Buy']}%\n- 익절: {best['M_Prof']}%\n- 손절일: {best['M_Time']}일")
-                        c3.error(f"**📈 천장 모드**\n- 기준: {best['Ceil_Ref']}\n- 매수: {best['C_Buy']}%\n- 익절: {best['C_Prof']}%\n- 손절일: {best['C_Time']}일")
+                        c1.info(f"**📉 바닥 모드**\n- 기준: {best['Bot_Ref']}\n- 매수: {best['B_Buy']}%\n- 익절: {best['B_Prof']}%\n- 손절: {best['B_Time']}일")
+                        c2.warning(f"**➖ 중간 모드**\n- 매수: {best['M_Buy']}%\n- 익절: {best['M_Prof']}%\n- 손절: {best['M_Time']}일")
+                        c3.error(f"**📈 천장 모드**\n- 기준: {best['Ceil_Ref']}\n- 매수: {best['C_Buy']}%\n- 익절: {best['C_Prof']}%\n- 손절: {best['C_Time']}일")
                         st.success(f"📊 **성과: CAGR {best['CAGR']:.2f}% / MDD {best['MDD']:.2f}%**")
 
                     # 산점도
