@@ -126,12 +126,14 @@ def save_settings_to_gsheet(sheet_url):
         
         data_to_save = []
         for key in st.session_state:
+            # 기본 변수 저장
             if (key.endswith('_s') or key.endswith('_a')) and not key.startswith('w_') and not key.startswith('base_w_') and not key.startswith('current_w_'):
                 val = st.session_state[key]
                 if isinstance(val, (datetime.date, datetime.datetime)):
                     val = val.strftime('%Y-%m-%d')
                 data_to_save.append([key, str(val)])
         
+        # 비중표(DataFrame) 저장
         for suffix in ['s', 'a']:
             current_key = f"current_w_{suffix}"
             if current_key in st.session_state:
@@ -164,6 +166,7 @@ def load_settings_from_gsheet(sheet_url):
             if len(row) < 2: continue
             key, val_str = row[0], row[1]
             
+            # [1] 데이터프레임 로드
             if (key == 'w_s' or key == 'w_a') and val_str.startswith("DF:"):
                 try: 
                     suffix = key.split('_')[-1]
@@ -173,10 +176,12 @@ def load_settings_from_gsheet(sheet_url):
                     df_loaded_flag = True
                 except: pass
             else:
+                # [2] 일반 변수 로드
                 try:
-                    if key.startswith('sd_') or key.startswith('ed_'):
+                    # [수정] 종료일(ed_)은 불러오지 않음 (항상 오늘로 설정하기 위해)
+                    if key.startswith('sd_'): 
                         st.session_state[key] = datetime.datetime.strptime(val_str, '%Y-%m-%d').date()
-                    else:
+                    elif not key.startswith('ed_'): # 종료일 키는 건너뜀
                         if '.' in val_str: st.session_state[key] = float(val_str)
                         else: st.session_state[key] = int(val_str)
                 except:
@@ -445,15 +450,17 @@ with st.sidebar:
     def render_strategy_inputs(suffix, key_prefix):
         st.subheader(f"📊 {key_prefix} 기본 설정")
         
-        # [핵심 수정] value를 st.session_state에서 가져오도록 변경 (충돌 방지)
         k_bal = f"bal_{suffix}"
         balance = st.number_input(f"초기 자본 ($)", value=st.session_state.get(k_bal, 10000), key=k_bal)
         
         today = datetime.date.today()
         c_d1, c_d2 = st.columns(2)
         k_sd = f"sd_{suffix}"; k_ed = f"ed_{suffix}"
+        
         start_date = c_d1.date_input("시작일", value=st.session_state.get(k_sd, datetime.date(2010, 1, 1)), max_value=today, key=k_sd)
-        end_date = c_d2.date_input("종료일", value=st.session_state.get(k_ed, today), max_value=today, key=k_ed)
+        
+        # [수정] 종료일은 무조건 '오늘'을 기본값으로 사용 (저장된 값 무시)
+        end_date = c_d2.date_input("종료일", value=today, max_value=today, key=k_ed)
         
         st.markdown("---")
         st.write("⚙️ **파라미터 설정**")
@@ -705,7 +712,7 @@ if sheet_url:
                             if send_orders_to_gsheet(orders_df, order_sheet_url, "HTS주문"): st.success("✅ 전송 완료!")
                             else: st.error("❌ 전송 실패")
                     with col_btn2:
-                        auto_time = st.time_input("⏰ 자동 전송 시간", value=datetime.time(18, 00))
+                        auto_time = st.time_input("⏰ 자동 전송 시간", value=datetime.time(22, 30))
                         now = datetime.datetime.now().time()
                         if 'last_auto_send' not in st.session_state: st.session_state.last_auto_send = None
                         today_str = datetime.date.today().isoformat()
