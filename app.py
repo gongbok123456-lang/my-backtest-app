@@ -473,112 +473,92 @@ with st.sidebar:
     
     tab_s, tab_a = st.tabs(["🛡️ 안정형", "🔥 공격형"])
 
-    def render_strategy_inputs(suffix, key_prefix):
-        st.subheader(f"📊 {key_prefix} 기본 설정")
-        
-        # [추가됨] 전략 모드 선택 스위치
-        k_mode = f"mode_{suffix}"
-        # 기본값은 'Disparity(이격도)'로 설정
-        strategy_mode = st.radio(
-            "기준 지표 선택", 
-            ["이격도 (MA Basis)", "RSI (Relative Strength)"], 
-            key=k_mode,
-            horizontal=True
-        )
-        
-        # [핵심 수정] value를 st.session_state에서 가져오도록 변경 (충돌 방지)
-        k_bal = f"bal_{suffix}"
-        balance = st.number_input(f"초기 자본 ($)", value=st.session_state.get(k_bal, 10000), key=k_bal)
-        
-        today = datetime.date.today()
-        c_d1, c_d2 = st.columns(2)
-        k_sd = f"sd_{suffix}"; k_ed = f"ed_{suffix}"
-        start_date = c_d1.date_input("시작일", value=st.session_state.get(k_sd, datetime.date(2010, 1, 1)), max_value=today, key=k_sd)
-        end_date = c_d2.date_input("종료일", value=st.session_state.get(k_ed, today), max_value=today, key=k_ed)
-        
-        st.markdown("---")
-        st.write("⚙️ **파라미터 설정**")
-        
-        k_fee = f"fee_{suffix}"
-        fee = st.number_input("수수료 (%)", value=st.session_state.get(k_fee, 0.07), step=0.01, format="%.2f", key=k_fee)
-        
-        k_pr = f"pr_{suffix}"; k_lr = f"lr_{suffix}"
-        profit_rate = st.slider("이익 복리율 (%)", 0, 100, st.session_state.get(k_pr, 70), key=k_pr)
-        loss_rate = st.slider("손실 복리율 (%)", 0, 100, st.session_state.get(k_lr, 50), key=k_lr)
-        
-        c_loc1, c_loc2 = st.columns(2)
-        k_add = f"add_{suffix}"; k_rng = f"rng_{suffix}"
-        add_order_cnt = c_loc1.number_input("분할 횟수", value=st.session_state.get(k_add, 4), min_value=1, key=k_add) 
-        loc_range = c_loc2.number_input("LOC 범위 (-%)", value=st.session_state.get(k_rng, 20.0), min_value=0.0, key=k_rng)
-        
-        k_ma = f"ma_{suffix}"
-        ma_win = st.number_input("이평선 (MA)", 50, 300, st.session_state.get(k_ma, 200), key=k_ma)
-
-        st.markdown("##### 📉 바닥 (Bottom)")
-        c1, c2 = st.columns(2)
-        k_bc=f"bc_{suffix}"; k_bb=f"bb_{suffix}"; k_bp=f"bp_{suffix}"; k_bt=f"bt_{suffix}"
-        bt_cond = c1.number_input("기준 값 (이격/RSI)", 0.0, 200.0, st.session_state.get(k_bc, 0.90), step=0.01, format="%.2f", key=k_bc)
-        bt_buy = c2.number_input("매수점%", -30.0, 30.0, st.session_state.get(k_bb, 15.0), step=0.1, key=k_bb)
-        bt_prof = c1.number_input("익절%", 0.0, 100.0, st.session_state.get(k_bp, 2.5), step=0.1, key=k_bp)
-        bt_time = c2.number_input("존버일", 1, 100, st.session_state.get(k_bt, 10), key=k_bt)
-
-        st.markdown("##### ➖ 중간 (Middle)")
-        c3, c4 = st.columns(2)
-        k_mb=f"mb_{suffix}"; k_mp=f"mp_{suffix}"; k_mt=f"mt_{suffix}"
-        md_buy = c3.number_input("매수점%", -30.0, 30.0, st.session_state.get(k_mb, -0.01), step=0.1, key=k_mb)
-        md_prof = c4.number_input("익절%", 0.0, 100.0, st.session_state.get(k_mp, 2.8), step=0.1, key=k_mp)
-        md_time = c3.number_input("존버일", 1, 100, st.session_state.get(k_mt, 15), key=k_mt)
-
-        st.markdown("##### 📈 천장 (Ceiling)")
-        c5, c6 = st.columns(2)
-        k_cc=f"cc_{suffix}"; k_cb=f"cb_{suffix}"; k_cp=f"cp_{suffix}"; k_ct=f"ct_{suffix}"
-        cl_cond = c5.number_input("기준 값 (이격/RSI)", 0.0, 200.0, st.session_state.get(k_cc, 1.10), step=0.01, format="%.2f", key=k_cc)
-        cl_buy = c6.number_input("매수점%", -30.0, 30.0, st.session_state.get(k_cb, -0.1), step=0.1, key=k_cb)
-        cl_prof = c5.number_input("익절%", 0.0, 100.0, st.session_state.get(k_cp, 1.5), step=0.1, key=k_cp)
-        cl_time = c6.number_input("존버일", 1, 100, st.session_state.get(k_ct, 40), key=k_ct)
-        
-        st.markdown("---")
-        st.write("⚖️ **티어별 비중**")
-        
-        base_key = f"base_w_{suffix}"
-        if base_key in st.session_state:
-            initial_data = st.session_state[base_key]
-        else:
-            default_data = {
-                'Tier': [f'Tier {i}' for i in range(1, 11)],
-                'Bottom': [10.0] * 10, 'Middle': [10.0] * 10, 'Ceiling': [10.0] * 10
-            }
-            initial_data = pd.DataFrame(default_data).set_index('Tier')
-            st.session_state[base_key] = initial_data
-
-        current_ver = st.session_state.editor_ver
-        unique_key = f"w_{suffix}_v{current_ver}"
-        
-        edited_w = st.data_editor(
-            initial_data, 
-            key=unique_key, 
-            column_config={
-                "Bottom": st.column_config.NumberColumn("바닥%", format="%.1f%%"),
-                "Middle": st.column_config.NumberColumn("중간%", format="%.1f%%"),
-                "Ceiling": st.column_config.NumberColumn("천장%", format="%.1f%%"),
-            }, use_container_width=True
-        )
-        st.session_state[f"current_w_{suffix}"] = edited_w
-
-        return {
-            'strategy_mode': strategy_mode,
-			'start_date': start_date, 'end_date': end_date,
-            'initial_balance': balance,
-            'fee_rate': fee/100,
-            'profit_rate': profit_rate/100.0, 'loss_rate': loss_rate/100.0,
-            'loc_range': loc_range, 'add_order_cnt': add_order_cnt,
-            'force_round': True, 'ma_window': ma_win, 
-            'bt_cond': bt_cond, 'bt_buy': bt_buy, 'bt_prof': bt_prof/100, 'bt_time': bt_time,
-            'md_buy': md_buy, 'md_prof': md_prof/100, 'md_time': md_time,
-            'cl_cond': cl_cond, 'cl_buy': cl_buy, 'cl_prof': cl_prof/100, 'cl_time': cl_time,
-            'tier_weights': edited_w,
-            'label': key_prefix
-        }
+	    def render_strategy_inputs(suffix, key_prefix):
+	    st.subheader(f"📊 {key_prefix} 기본 설정")
+	    
+	    # 1. 전략 모드 선택 (여기는 충돌 없음)
+	    k_mode = f"mode_{suffix}"
+	    # 세션에 값이 없으면 기본값 설정
+	    if k_mode not in st.session_state:
+	        st.session_state[k_mode] = "이격도 (MA Basis)"
+	        
+	    strategy_mode = st.radio(
+	        "기준 지표 선택", 
+	        ["이격도 (MA Basis)", "RSI (Relative Strength)"], 
+	        key=k_mode,
+	        horizontal=True
+	    )
+	
+	    # 2. 초기 자본 (오류 발생 지점 수정)
+	    # value=st.session_state.get(...) 형태를 -> value=10000.0 으로 단순화
+	    k_bal = f"bal_{suffix}"
+	    balance = st.number_input("초기 자본 ($)", value=10000.0, step=1000.0, format="%.1f", key=k_bal)
+	    
+	    k_sd = f"sd_{suffix}"; k_ed = f"ed_{suffix}"
+	    c_d1, c_d2 = st.columns(2)
+	    start_date = c_d1.date_input("시작일", value=datetime.date(2022, 1, 1), key=k_sd)
+	    end_date = c_d2.date_input("종료일", value=datetime.date.today(), key=k_ed)
+	    
+	    k_ma = f"ma_{suffix}"
+	    ma_window = st.number_input("이평선 기간 (일)", value=120, step=10, key=k_ma)
+	
+	    st.markdown("---")
+	    st.markdown(f"**🎯 {strategy_mode} 상세 파라미터**")
+	    
+	    # 모드에 따라 추천 기본값 텍스트 보여주기 (팁)
+	    if "RSI" in strategy_mode:
+	        st.caption("💡 RSI 추천값: 바닥(30~35), 천장(70~75)")
+	        default_bt = 30.0 # RSI 기본값
+	        default_cl = 70.0
+	    else:
+	        st.caption("💡 이격도 추천값: 바닥(0.9~0.95), 천장(1.05~1.1)")
+	        default_bt = 0.90 # 이격도 기본값
+	        default_cl = 1.10
+	
+	    # 3. 바닥/천장 설정 (범위 0~200으로 확장 및 오류 수정)
+	    st.markdown("##### 📉 바닥 (Bottom)")
+	    c1, c2 = st.columns(2)
+	    k_bc=f"bc_{suffix}"; k_bb=f"bb_{suffix}"
+	    
+	    # 여기서도 value에는 변수나 고정값만 넣고, st.session_state.get은 뺍니다.
+	    # 단, 모드 전환 시 기본값을 유동적으로 바꾸고 싶다면 아래처럼 'key가 없을 때만' 값을 넣는 로직을 쓸 수도 있지만,
+	    # 가장 안전한 방법은 그냥 고정된 값을 넣거나, 스트림릿이 기억하게 두는 것입니다.
+	    # 여기서는 충돌 방지를 위해 가장 단순한 고정값을 넣겠습니다. (사용자가 바꾸면 그게 유지됨)
+	    
+	    bt_cond = c1.number_input("기준 값 (이격/RSI)", 0.0, 200.0, value=default_bt, step=0.01, format="%.2f", key=k_bc)
+	    bt_buy = c2.number_input("매수점%", -30.0, 30.0, value=15.0, step=0.1, key=k_bb)
+	    
+	    k_bp=f"bp_{suffix}"; k_bt=f"bt_{suffix}"
+	    c3, c4 = st.columns(2)
+	    bt_prof = c3.number_input("익절%", 0.0, 100.0, value=10.0, step=0.5, key=k_bp)
+	    bt_time = c4.number_input("보유일(TimeCut)", 0, 365, value=20, step=1, key=k_bt)
+	    
+	    # 추가매수 횟수
+	    k_add_cnt = f"add_cnt_{suffix}"
+	    bt_add_cnt = st.number_input("분할매수 횟수 (0=미사용)", 0, 10, value=0, step=1, key=k_add_cnt)
+	
+	    st.markdown("##### 📈 천장 (Ceiling)")
+	    c5, c6 = st.columns(2)
+	    k_cc=f"cc_{suffix}"; k_cb=f"cb_{suffix}"
+	    
+	    cl_cond = c5.number_input("기준 값 (이격/RSI)", 0.0, 200.0, value=default_cl, step=0.01, format="%.2f", key=k_cc)
+	    cl_buy = c6.number_input("매수점%", -30.0, 30.0, value=-5.0, step=0.1, key=k_cb)
+	    
+	    k_cp=f"cp_{suffix}"; k_ct=f"ct_{suffix}"
+	    c7, c8 = st.columns(2)
+	    cl_prof = c7.number_input("익절%", 0.0, 100.0, value=3.0, step=0.5, key=k_cp)
+	    cl_time = c8.number_input("보유일(TimeCut)", 0, 365, value=3, step=1, key=k_ct)
+	
+	    return {
+	        'strategy_mode': strategy_mode, # 모드 리턴
+	        'start_date': start_date, 'end_date': end_date,
+	        'initial_balance': balance, 'ma_window': ma_window,
+	        'bt_cond': bt_cond, 'bt_buy_thr': bt_buy/100, 
+	        'bt_prof_thr': bt_prof/100, 'bt_time_cut': bt_time,
+	        'bt_add_order_cnt': bt_add_cnt,
+	        'cl_cond': cl_cond, 'cl_buy_thr': cl_buy/100,
+	        'cl_prof_thr': cl_prof/100, 'cl_time_cut': cl_time
+	    }
 
     with tab_s:
         params_s = render_strategy_inputs('s', '🛡️ 안정형')
@@ -790,4 +770,5 @@ if sheet_url:
 
 else:
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
 
