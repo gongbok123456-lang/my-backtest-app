@@ -6,29 +6,24 @@ import math
 import datetime
 import time
 import json
+import random
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # --- [기본 설정 값] ---
-# 1. 주가 데이터 읽기용
 DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1dK11y5aTIhDGfpMduNsuSgTDlDoPo-OF6uE5FIePXVg/edit"
-# 2. 주문 전송용 (기본값)
 DEFAULT_ORDER_URL = "https://docs.google.com/spreadsheets/d/1PpgexM79XVvr23sVfi_6ZsrfASetVXhqjJQDYuISOnM/edit?gid=117251557#gid=117251557" 
 
 # --- [페이지 설정] ---
 st.set_page_config(page_title="쪼꼬야옹 백테스트 연구소", page_icon="📈", layout="wide")
 
 # --- [세션 상태 초기화] ---
-if 'opt_results' not in st.session_state:
-    st.session_state.opt_results = []
-if 'trial_count' not in st.session_state:
-    st.session_state.trial_count = 0
-if 'last_backtest_result' not in st.session_state:
-    st.session_state.last_backtest_result = None
-if 'editor_ver' not in st.session_state:
-    st.session_state.editor_ver = 0
+if 'opt_results' not in st.session_state: st.session_state.opt_results = []
+if 'trial_count' not in st.session_state: st.session_state.trial_count = 0
+if 'last_backtest_result' not in st.session_state: st.session_state.last_backtest_result = None
+if 'editor_ver' not in st.session_state: st.session_state.editor_ver = 0
 
-# --- [구글 시트 연동 및 설정 관리 함수] ---
+# --- [구글 시트 연동] ---
 def get_gspread_client():
     try:
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
@@ -49,17 +44,14 @@ def load_data_from_gsheet(url):
         sheet = client.open_by_url(url)
         worksheet = sheet.get_worksheet(0)
         rows = worksheet.get_all_values()
-        
         if not rows: return None
 
         header_row_idx = -1
-        idx_qqq = -1
-        idx_soxl = -1
+        idx_qqq = -1; idx_soxl = -1
         for i, row in enumerate(rows[:20]):
             if "QQQ" in row and "SOXL" in row:
                 header_row_idx = i
-                idx_qqq = row.index("QQQ")
-                idx_soxl = row.index("SOXL")
+                idx_qqq = row.index("QQQ"); idx_soxl = row.index("SOXL")
                 break
         
         if header_row_idx == -1: return None
@@ -69,20 +61,16 @@ def load_data_from_gsheet(url):
             extracted = []
             for r in data_rows[start_row:]:
                 if len(r) > col_idx + 1:
-                    d = r[col_idx]
-                    p = r[col_idx + 1]
+                    d = r[col_idx]; p = r[col_idx + 1]
                     if d and p: extracted.append([d, p])
-            
             df_temp = pd.DataFrame(extracted, columns=['Date', name])
             df_temp['Date'] = df_temp['Date'].astype(str).str.strip().str.replace(r'\(.*?\)', '', regex=True).str.replace('.', '-')
-            
             def fix_year(date_str):
                 try:
                     parts = date_str.split('-')
                     if len(parts) == 3 and len(parts[0]) == 2: return f"20{parts[0]}-{parts[1]}-{parts[2]}"
                     return date_str
                 except: return date_str
-            
             df_temp['Date'] = df_temp['Date'].apply(fix_year)
             df_temp['Date'] = pd.to_datetime(df_temp['Date'], errors='coerce')
             df_temp[name] = pd.to_numeric(df_temp[name].astype(str).str.replace(',', '').str.replace('$', ''), errors='coerce')
@@ -95,7 +83,6 @@ def load_data_from_gsheet(url):
         df_merged.set_index('Date', inplace=True)
         df_merged.sort_index(inplace=True)
         return df_merged if not df_merged.empty else None
-
     except Exception as e:
         st.error(f"데이터 로드 실패: {e}")
         return None
@@ -115,7 +102,7 @@ def send_orders_to_gsheet(orders_df, sheet_url, worksheet_name="HTS주문"):
         st.error(f"주문 전송 실패: {e}")
         return False
 
-# --- [설정 저장/불러오기 로직] ---
+# --- [설정 저장/불러오기] ---
 def save_settings_to_gsheet(sheet_url):
     client = get_gspread_client()
     if not client: return
@@ -126,14 +113,11 @@ def save_settings_to_gsheet(sheet_url):
         
         data_to_save = []
         for key in st.session_state:
-            # 기본 변수 저장
             if (key.endswith('_s') or key.endswith('_a')) and not key.startswith('w_') and not key.startswith('base_w_') and not key.startswith('current_w_'):
                 val = st.session_state[key]
-                if isinstance(val, (datetime.date, datetime.datetime)):
-                    val = val.strftime('%Y-%m-%d')
+                if isinstance(val, (datetime.date, datetime.datetime)): val = val.strftime('%Y-%m-%d')
                 data_to_save.append([key, str(val)])
         
-        # 비중표(DataFrame) 저장
         for suffix in ['s', 'a']:
             current_key = f"current_w_{suffix}"
             if current_key in st.session_state:
@@ -143,15 +127,12 @@ def save_settings_to_gsheet(sheet_url):
                     data_to_save.append([f"w_{suffix}", val])
 
         ws.clear()
-        if data_to_save:
-            ws.update(data_to_save)
+        if data_to_save: ws.update(data_to_save)
         st.toast("✅ 설정이 구글 시트에 저장되었습니다!", icon="💾")
-    except Exception as e:
-        st.error(f"설정 저장 실패: {e}")
+    except Exception as e: st.error(f"설정 저장 실패: {e}")
 
 def load_settings_from_gsheet(sheet_url):
     if 'settings_loaded' in st.session_state: return
-
     client = get_gspread_client()
     if not client: return
     try:
@@ -161,38 +142,27 @@ def load_settings_from_gsheet(sheet_url):
         
         rows = ws.get_all_values()
         df_loaded_flag = False
-
         for row in rows:
             if len(row) < 2: continue
             key, val_str = row[0], row[1]
-            
-            # [1] 데이터프레임 로드
             if (key == 'w_s' or key == 'w_a') and val_str.startswith("DF:"):
                 try: 
                     suffix = key.split('_')[-1]
-                    json_str = val_str[3:]
-                    loaded_df = pd.read_json(json_str)
+                    loaded_df = pd.read_json(val_str[3:])
                     st.session_state[f"base_w_{suffix}"] = loaded_df
                     df_loaded_flag = True
                 except: pass
             else:
-                # [2] 일반 변수 로드
                 try:
-                    # 종료일(ed_)은 불러오지 않음
-                    if key.startswith('sd_'): 
-                        st.session_state[key] = datetime.datetime.strptime(val_str, '%Y-%m-%d').date()
+                    if key.startswith('sd_'): st.session_state[key] = datetime.datetime.strptime(val_str, '%Y-%m-%d').date()
                     elif not key.startswith('ed_'):
                         if '.' in val_str: st.session_state[key] = float(val_str)
                         else: st.session_state[key] = int(val_str)
-                except:
-                    st.session_state[key] = val_str
+                except: st.session_state[key] = val_str
         
-        if df_loaded_flag:
-            st.session_state.editor_ver += 1
-
+        if df_loaded_flag: st.session_state.editor_ver += 1
         st.session_state['settings_loaded'] = True
-    except Exception as e:
-        print(f"설정 로드 중 오류: {e}")
+    except Exception as e: print(f"설정 로드 중 오류: {e}")
 
 # --- [유틸리티 함수] ---
 def excel_round_up(n, decimals=0):
@@ -208,52 +178,42 @@ def excel_round_down(n, decimals=0):
 def calculate_loc_quantity(seed_amount, order_price, close_price, buy_range, max_add_orders):
     if seed_amount is None or order_price is None or order_price <= 0: return 0
     if pd.isna(seed_amount) or pd.isna(order_price) or pd.isna(close_price): return 0
-
     base_qty = int(seed_amount / order_price)
     multiplier = (1 + buy_range) if buy_range <= 0 else (1 - buy_range)
     bot_price = excel_round_down(order_price * multiplier, 2)
-
     fix_qty = 0
     if bot_price > 0:
         qty_at_bot = seed_amount / bot_price
         qty_at_order = seed_amount / order_price
         fix_qty = int((qty_at_bot - qty_at_order) / max_add_orders)
     if fix_qty < 0: fix_qty = 0
-
     final_qty = 0
     if base_qty > 0:
         implied_price = seed_amount / base_qty
-        if implied_price >= close_price and implied_price >= bot_price:
-            final_qty += base_qty
-
+        if implied_price >= close_price and implied_price >= bot_price: final_qty += base_qty
     for i in range(1, max_add_orders + 1):
         step_qty = fix_qty
         current_cum_qty = base_qty + (i * step_qty)
         if current_cum_qty <= 0: continue
         implied_price = seed_amount / current_cum_qty
-        if implied_price >= close_price and implied_price >= bot_price:
-            final_qty += step_qty
-
+        if implied_price >= close_price and implied_price >= bot_price: final_qty += step_qty
     return final_qty
 
-# --- [백테스트 엔진: RSI 추가] ---
+# --- [백테스트 엔진] ---
 def backtest_engine_web(df, params):
     df = df.copy()
-    
-    # 1. 기본 전처리
     df['QQQ'] = pd.to_numeric(df['QQQ'], errors='coerce')
     ma_win = int(params['ma_window'])
     df['MA_Daily'] = df['QQQ'].rolling(window=ma_win, min_periods=1).mean()
     df['Log_Start_Price'] = df['QQQ'].shift(ma_win - 1)
-
-    # 2. RSI 계산 (14일 기준)
+    
+    # RSI 계산
     delta = df['SOXL'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
 
-    # 3. 주간 데이터 처리 (휴장일 대응)
     weekly_resampled = df[['QQQ', 'MA_Daily', 'Log_Start_Price']].resample('W-FRI').last()
     weekly_resampled.columns = ['QQQ_Fri', 'MA_Fri', 'Start_Price_Fri']
     weekly_resampled['Disp_Fri'] = weekly_resampled['QQQ_Fri'] / weekly_resampled['MA_Fri']
@@ -262,20 +222,18 @@ def backtest_engine_web(df, params):
     daily_shifted = daily_expanded.shift(1)
     df_mapped = daily_shifted.reindex(df.index)
     
-    df['Basis_Disp']      = df_mapped['Disp_Fri'].fillna(1.0)
-    df['Log_Ref_Date']    = daily_shifted['QQQ_Fri'].reindex(df.index).index 
-    df['Log_QQQ_Fri']     = df_mapped['QQQ_Fri']
-    df['Log_MA_Fri']      = df_mapped['MA_Fri']
+    df['Basis_Disp'] = df_mapped['Disp_Fri'].fillna(1.0)
+    df['Log_Ref_Date'] = daily_shifted['QQQ_Fri'].reindex(df.index).index 
+    df['Log_QQQ_Fri'] = df_mapped['QQQ_Fri']
+    df['Log_MA_Fri'] = df_mapped['MA_Fri']
     df['Log_Start_Price'] = df_mapped['Start_Price_Fri']
     df['Prev_Close'] = df['SOXL'].shift(1)
     
-    # 날짜 필터링
     start_dt = pd.to_datetime(params['start_date'])
     end_dt = pd.to_datetime(params['end_date'])
     df = df.sort_index()
     df = df[(df.index >= start_dt) & (df.index <= end_dt + pd.Timedelta(days=1))].copy()
     df = df.dropna(subset=['SOXL'])  
-
     if len(df) == 0: return None
 
     dates = df.index
@@ -288,57 +246,42 @@ def backtest_engine_web(df, params):
     cash = params['initial_balance']
     seed_equity = cash
     holdings = []
-    
-    trade_log = [] 
-    daily_log = [] 
-    daily_equity = []
-    daily_dates = []
-    trade_count = 0
-    win_count = 0
-    
-    MAX_SLOTS = 10
-    SEC_FEE = 0.0000278
+    trade_log = []; daily_log = []; daily_equity = []; daily_dates = []
+    trade_count = 0; win_count = 0
+    MAX_SLOTS = 10; SEC_FEE = 0.0000278
 
     for i in range(len(df)):
         row = df.iloc[i]
-        date = row.name
-        start_cash = cash
-        
         today_close = row['SOXL']
         if pd.isna(today_close) or today_close <= 0: continue
         if params.get('force_round', True): today_close = round(today_close, 2)
         
-        # [핵심] 전략 기준에 따른 Phase 결정
+        start_cash = cash
         strat_type = params.get('strategy_type', 'MA 이격도')
         current_disp = row['Basis_Disp'] if not pd.isna(row['Basis_Disp']) else 1.0
         current_rsi = row['RSI'] if not pd.isna(row['RSI']) else 50.0
         
         if strat_type == 'RSI':
-            # RSI 기준 (예: 30 미만 Bottom, 70 초과 Ceiling)
             if current_rsi < params['bt_cond']: phase = 'Bottom'
             elif current_rsi > params['cl_cond']: phase = 'Ceiling'
             else: phase = 'Middle'
-            disp_val_for_log = current_rsi # 로그용 변수 재활용
+            disp_val = current_rsi
         else:
-            # MA 이격도 기준 (예: 0.9 미만 Bottom, 1.1 초과 Ceiling)
             if current_disp < params['bt_cond']: phase = 'Bottom'
             elif current_disp > params['cl_cond']: phase = 'Ceiling'
             else: phase = 'Middle'
-            disp_val_for_log = current_disp
+            disp_val = current_disp
 
         conf = strategy[phase]
         tiers_sold = set()
         daily_net_profit_sum = 0
         
-        # 매도
         for stock in holdings[:]:
             buy_p, days, qty, mode, tier, buy_dt = stock
             s_conf = strategy[mode]
             days += 1
             target_p = excel_round_up(buy_p * (1 + s_conf['prof']), 2)
-            
-            is_sold = False
-            reason = ""
+            is_sold = False; reason = ""
             if days >= s_conf['time']: is_sold = True; reason = f"TimeCut({days}d)"
             elif today_close >= target_p: is_sold = True; reason = "Profit"
             
@@ -350,7 +293,6 @@ def backtest_engine_web(df, params):
                 net_receive = sell_amt * (1 - params['fee_rate']) - sec_fee_val
                 buy_cost = (buy_p * qty) * (1 + params['fee_rate'])
                 real_profit = round(net_receive - buy_cost, 2)
-                
                 daily_net_profit_sum += real_profit
                 cash += net_receive
                 trade_count += 1
@@ -358,14 +300,11 @@ def backtest_engine_web(df, params):
                 trade_log.append({
                     'Date': dates[i], 'Type': 'Sell', 'Tier': tier, 'Phase': mode, 
                     'Ref_Date': row['Log_Ref_Date'].strftime('%Y-%m-%d') if pd.notnull(row['Log_Ref_Date']) else '-',
-                    'QQQ_Fri': row['Log_QQQ_Fri'], 'MA_Calc': row['Log_MA_Fri'], 'Disp': disp_val_for_log,
-                    'Start_P': row['Log_Start_Price'], 'Price': today_close, 'Qty': qty, 
+                    'Disp': disp_val, 'Price': today_close, 'Qty': qty, 
                     'Profit': real_profit, 'Reason': reason
                 })
-            else:
-                stock[1] = days
+            else: stock[1] = days
         
-        # 매수
         prev_c = row['Prev_Close'] if not pd.isna(row['Prev_Close']) else today_close
         if pd.isna(prev_c): prev_c = today_close
         target_p = excel_round_down(prev_c * (1 + conf['buy'] / 100), 2)
@@ -388,14 +327,8 @@ def backtest_engine_web(df, params):
                 
                 if bet >= 10:
                     final_qty = 0
-                    if new_tier == MAX_SLOTS:
-                        final_qty = int(bet_net_fee / target_p)
-                    else:
-                        final_qty = calculate_loc_quantity(
-                            seed_amount=bet_net_fee, order_price=target_p, close_price=today_close,
-                            buy_range= -1 * (params['loc_range'] / 100.0), max_add_orders=int(params['add_order_cnt'])
-                        )
-                    
+                    if new_tier == MAX_SLOTS: final_qty = int(bet_net_fee / target_p)
+                    else: final_qty = calculate_loc_quantity(bet_net_fee, target_p, today_close, -1*(params['loc_range']/100.0), int(params['add_order_cnt']))
                     max_buyable = int(start_cash / (today_close * (1 + params['fee_rate']))) 
                     real_qty = min(final_qty, max_buyable)
                     
@@ -406,27 +339,19 @@ def backtest_engine_web(df, params):
                         trade_log.append({
                             'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase, 
                             'Ref_Date': row['Log_Ref_Date'].strftime('%Y-%m-%d') if pd.notnull(row['Log_Ref_Date']) else '-',
-                            'QQQ_Fri': row['Log_QQQ_Fri'], 'MA_Calc': row['Log_MA_Fri'], 'Disp': disp_val_for_log,
-                            'Start_P': row['Log_Start_Price'], 'Price': today_close, 'Qty': real_qty, 
+                            'Disp': disp_val, 'Price': today_close, 'Qty': real_qty, 
                             'Profit': 0, 'Reason': 'LOC'
                         })
         
-        # 투자금 갱신
         if daily_net_profit_sum != 0:
             rate = params['profit_rate'] if daily_net_profit_sum > 0 else params['loss_rate']
             seed_equity += daily_net_profit_sum * rate
         
         current_eq = cash + sum([h[2]*today_close for h in holdings])
-        daily_equity.append(current_eq)
-        daily_dates.append(dates[i])
-        daily_log.append({
-            'Date': dates[i], 'Equity': round(current_eq, 2), 
-            'Cash': round(cash, 2), 'SeedEquity': round(seed_equity, 2), 
-            'Holdings': len(holdings)
-        })
+        daily_equity.append(current_eq); daily_dates.append(dates[i])
+        daily_log.append({'Date': dates[i], 'Equity': round(current_eq, 2), 'Cash': round(cash, 2), 'SeedEquity': round(seed_equity, 2), 'Holdings': len(holdings)})
 
     if not daily_equity: return None
-
     final_equity = daily_equity[-1]
     total_ret_pct = (final_equity / params['initial_balance'] - 1) * 100
     days_total = (dates[-1] - dates[0]).days
@@ -457,46 +382,34 @@ st.title("📊 쪼꼬야옹의 듀얼 전략 연구소")
 with st.sidebar:
     st.header("⚙️ 기본 데이터 연동")
     sheet_url = st.text_input("🔗 주가 데이터 시트 (읽기)", value=DEFAULT_SHEET_URL)
-    
     st.markdown("---")
     st.header("📤 HTS 주문 전송 설정")
     order_sheet_url = st.text_input("🔗 주문 전송 시트 (쓰기)", value=DEFAULT_ORDER_URL, placeholder="구글시트 URL 입력")
-    
-    if order_sheet_url:
-        load_settings_from_gsheet(order_sheet_url)
+    if order_sheet_url: load_settings_from_gsheet(order_sheet_url)
     
     st.markdown("---")
-    st.header("⚔️ 전략별 상세 설정")
-    
+    st.header("⚔️ [실전] 전략 설정")
     tab_s, tab_a = st.tabs(["🛡️ 안정형", "🔥 공격형"])
 
     def render_strategy_inputs(suffix, key_prefix):
         st.subheader(f"📊 {key_prefix} 기본 설정")
-        
         k_bal = f"bal_{suffix}"
         balance = st.number_input(f"초기 자본 ($)", value=st.session_state.get(k_bal, 10000), key=k_bal)
-        
         today = datetime.date.today()
         c_d1, c_d2 = st.columns(2)
         k_sd = f"sd_{suffix}"; k_ed = f"ed_{suffix}"
-        
         start_date = c_d1.date_input("시작일", value=st.session_state.get(k_sd, datetime.date(2010, 1, 1)), max_value=today, key=k_sd)
         end_date = c_d2.date_input("종료일", value=today, max_value=today, key=k_ed)
         
         st.markdown("---")
-        # [신규] 전략 기준 선택 (MA or RSI)
         st.write("⚙️ **전략 기준 선택**")
         k_type = f"st_type_{suffix}"
-        strategy_type = st.radio("매매 기준 지표", ["MA 이격도", "RSI"], 
-                                 index=0 if st.session_state.get(k_type, "MA 이격도") == "MA 이격도" else 1, 
-                                 horizontal=True, key=k_type)
+        strategy_type = st.radio("매매 기준 지표", ["MA 이격도", "RSI"], index=0 if st.session_state.get(k_type, "MA 이격도") == "MA 이격도" else 1, horizontal=True, key=k_type)
 
         st.markdown("---")
         st.write("⚙️ **파라미터 설정**")
-        
         k_fee = f"fee_{suffix}"
         fee = st.number_input("수수료 (%)", value=st.session_state.get(k_fee, 0.07), step=0.01, format="%.2f", key=k_fee)
-        
         k_pr = f"pr_{suffix}"; k_lr = f"lr_{suffix}"
         profit_rate = st.slider("이익 복리율 (%)", 0, 100, st.session_state.get(k_pr, 70), key=k_pr)
         loss_rate = st.slider("손실 복리율 (%)", 0, 100, st.session_state.get(k_lr, 50), key=k_lr)
@@ -505,23 +418,17 @@ with st.sidebar:
         k_add = f"add_{suffix}"; k_rng = f"rng_{suffix}"
         add_order_cnt = c_loc1.number_input("분할 횟수", value=st.session_state.get(k_add, 4), min_value=1, key=k_add) 
         loc_range = c_loc2.number_input("LOC 범위 (-%)", value=st.session_state.get(k_rng, 20.0), min_value=0.0, key=k_rng)
-        
         k_ma = f"ma_{suffix}"
         ma_win = st.number_input("이평선 (MA)", 50, 300, st.session_state.get(k_ma, 200), key=k_ma)
 
-        # [수정] 전략 타입에 따라 라벨과 기본값 변경
         if strategy_type == 'RSI':
-            lbl_bt = "RSI 기준 (이하)"; def_bt = 30.0; step_val = 1.0
-            lbl_cl = "RSI 기준 (이상)"; def_cl = 70.0
+            lbl_bt = "RSI 기준 (이하)"; def_bt = 30.0; step_val = 1.0; lbl_cl = "RSI 기준 (이상)"; def_cl = 70.0
         else:
-            lbl_bt = "이격도 기준 (이하)"; def_bt = 0.90; step_val = 0.01
-            lbl_cl = "이격도 기준 (이상)"; def_cl = 1.10
+            lbl_bt = "이격도 기준 (이하)"; def_bt = 0.90; step_val = 0.01; lbl_cl = "이격도 기준 (이상)"; def_cl = 1.10
 
         st.markdown("##### 📉 바닥 (Bottom)")
         c1, c2 = st.columns(2)
         k_bc=f"bc_{suffix}"; k_bb=f"bb_{suffix}"; k_bp=f"bp_{suffix}"; k_bt=f"bt_{suffix}"
-        
-        # 동적 라벨 적용
         bt_cond = c1.number_input(lbl_bt, 0.0, 100.0, st.session_state.get(k_bc, def_bt), step=step_val, key=k_bc)
         bt_buy = c2.number_input("매수점%", -30.0, 30.0, st.session_state.get(k_bb, 15.0), step=0.1, key=k_bb)
         bt_prof = c1.number_input("익절%", 0.0, 100.0, st.session_state.get(k_bp, 2.5), step=0.1, key=k_bp)
@@ -537,7 +444,6 @@ with st.sidebar:
         st.markdown("##### 📈 천장 (Ceiling)")
         c5, c6 = st.columns(2)
         k_cc=f"cc_{suffix}"; k_cb=f"cb_{suffix}"; k_cp=f"cp_{suffix}"; k_ct=f"ct_{suffix}"
-        
         cl_cond = c5.number_input(lbl_cl, 0.0, 100.0, st.session_state.get(k_cc, def_cl), step=step_val, key=k_cc)
         cl_buy = c6.number_input("매수점%", -30.0, 30.0, st.session_state.get(k_cb, -0.1), step=0.1, key=k_cb)
         cl_prof = c5.number_input("익절%", 0.0, 100.0, st.session_state.get(k_cp, 1.5), step=0.1, key=k_cp)
@@ -545,111 +451,78 @@ with st.sidebar:
         
         st.markdown("---")
         st.write("⚖️ **티어별 비중**")
-        
         base_key = f"base_w_{suffix}"
-        if base_key in st.session_state:
-            initial_data = st.session_state[base_key]
+        if base_key in st.session_state: initial_data = st.session_state[base_key]
         else:
-            default_data = {
-                'Tier': [f'Tier {i}' for i in range(1, 11)],
-                'Bottom': [10.0] * 10, 'Middle': [10.0] * 10, 'Ceiling': [10.0] * 10
-            }
+            default_data = {'Tier': [f'Tier {i}' for i in range(1, 11)], 'Bottom': [10.0]*10, 'Middle': [10.0]*10, 'Ceiling': [10.0]*10}
             initial_data = pd.DataFrame(default_data).set_index('Tier')
             st.session_state[base_key] = initial_data
 
         current_ver = st.session_state.editor_ver
         unique_key = f"w_{suffix}_v{current_ver}"
-        
-        edited_w = st.data_editor(
-            initial_data, 
-            key=unique_key, 
-            column_config={
-                "Bottom": st.column_config.NumberColumn("바닥%", format="%.1f%%"),
-                "Middle": st.column_config.NumberColumn("중간%", format="%.1f%%"),
-                "Ceiling": st.column_config.NumberColumn("천장%", format="%.1f%%"),
-            }, use_container_width=True
-        )
+        edited_w = st.data_editor(initial_data, key=unique_key, column_config={"Bottom": st.column_config.NumberColumn("바닥%", format="%.1f%%"), "Middle": st.column_config.NumberColumn("중간%", format="%.1f%%"), "Ceiling": st.column_config.NumberColumn("천장%", format="%.1f%%")}, use_container_width=True)
         st.session_state[f"current_w_{suffix}"] = edited_w
 
         return {
-            'strategy_type': strategy_type, # [추가] 전략 타입 전달
-            'start_date': start_date, 'end_date': end_date,
-            'initial_balance': balance,
-            'fee_rate': fee/100,
+            'strategy_type': strategy_type, 'start_date': start_date, 'end_date': end_date,
+            'initial_balance': balance, 'fee_rate': fee/100,
             'profit_rate': profit_rate/100.0, 'loss_rate': loss_rate/100.0,
             'loc_range': loc_range, 'add_order_cnt': add_order_cnt,
             'force_round': True, 'ma_window': ma_win, 
             'bt_cond': bt_cond, 'bt_buy': bt_buy, 'bt_prof': bt_prof/100, 'bt_time': bt_time,
             'md_buy': md_buy, 'md_prof': md_prof/100, 'md_time': md_time,
             'cl_cond': cl_cond, 'cl_buy': cl_buy, 'cl_prof': cl_prof/100, 'cl_time': cl_time,
-            'tier_weights': edited_w,
-            'label': key_prefix
+            'tier_weights': edited_w, 'label': key_prefix
         }
 
-    with tab_s:
-        params_s = render_strategy_inputs('s', '🛡️ 안정형')
-
-    with tab_a:
-        params_a = render_strategy_inputs('a', '🔥 공격형')
+    with tab_s: params_s = render_strategy_inputs('s', '🛡️ 안정형')
+    with tab_a: params_a = render_strategy_inputs('a', '🔥 공격형')
     
     st.markdown("---")
     if st.button("💾 현재 설정 저장하기", type="primary", use_container_width=True):
-        if order_sheet_url:
-            save_settings_to_gsheet(order_sheet_url)
-        else:
-            st.error("주문 전송 시트 URL을 먼저 입력해주세요.")
-
+        if order_sheet_url: save_settings_to_gsheet(order_sheet_url)
+        else: st.error("주문 전송 시트 URL을 먼저 입력해주세요.")
 
 if sheet_url:
     df = load_data_from_gsheet(sheet_url)
-    
     if df is not None:
-        tab_dash, tab_bt = st.tabs(["📢 듀얼 대시보드", "🚀 성과 비교"])
+        tab_dash, tab_lab, tab_mc = st.tabs(["📢 실전 대시보드", "🧪 백테스트 연구소", "🎲 몬테카를로 최적화"])
 
+        # --- [탭 1: 실전 대시보드] ---
         with tab_dash:
             last_date_str = df.index[-1].strftime('%Y-%m-%d')
             st.header(f"📢 오늘의 투자 브리핑 ({last_date_str})")
-            
             col_stable, col_agg = st.columns(2)
             
             def render_dashboard(col, p_params, strategy_name, stock_name="SOXL"):
                 hts_orders = []
                 with col:
-                    # 제목 옆에 전략 타입 표시
                     st.subheader(f"{strategy_name} ({p_params['strategy_type']})")
                     res = backtest_engine_web(df, p_params)
-                    if not res:
-                        st.error("데이터 부족 (기간 확인)")
-                        return hts_orders
+                    if not res: st.error("데이터 부족"); return hts_orders
 
                     last_row = res['LastData']
                     daily_last = res['DailyLog'].iloc[-1]
-                    current_cash = daily_last['Cash']
-                    seed_equity_basis = daily_last['SeedEquity']
-                    current_holdings = res['CurrentHoldings']
                     
-                    # [표시] 현재 지표값 (RSI 또는 이격도)
+                    # 지표 표시
                     if p_params['strategy_type'] == 'RSI':
-                        curr_val = last_row['RSI']
-                        val_fmt = f"{curr_val:.2f}"
-                        label_metric = "현재 RSI"
+                        curr_val = last_row['RSI']; val_fmt = f"{curr_val:.2f}"; label_metric = "현재 RSI"
                     else:
-                        curr_val = last_row['Basis_Disp']
-                        val_fmt = f"{curr_val:.4f}"
-                        label_metric = "현재 이격도"
+                        curr_val = last_row['Basis_Disp']; val_fmt = f"{curr_val:.4f}"; label_metric = "현재 이격도"
 
                     if curr_val < p_params['bt_cond']: curr_phase = "📉 바닥"
                     elif curr_val > p_params['cl_cond']: curr_phase = "📈 천장"
                     else: curr_phase = "➖ 중간"
                     
-                    st.metric("시드 자산 (확정)", f"${seed_equity_basis:,.0f}")
-                    st.metric("보유 현금", f"${current_cash:,.0f}")
-                    st.caption(f"{label_metric}: {val_fmt} ({curr_phase}) | 초기자본: ${p_params['initial_balance']:,}")
+                    st.metric("시드 자산 (확정)", f"${daily_last['SeedEquity']:,.0f}")
+                    st.metric("보유 현금", f"${daily_last['Cash']:,.0f}")
+                    st.caption(f"{label_metric}: {val_fmt} ({curr_phase})")
                     st.divider()
 
+                    # 매수 주문
                     n_split = int(p_params['add_order_cnt'])
                     loc_range = p_params['loc_range']
-                    next_tier = min(len(current_holdings) + 1, 10)
+                    next_tier = min(len(res['CurrentHoldings']) + 1, 10)
                     
                     if "바닥" in curr_phase: col_key = "Bottom"; start_rate = p_params['bt_buy']
                     elif "천장" in curr_phase: col_key = "Ceiling"; start_rate = p_params['cl_buy']
@@ -658,9 +531,8 @@ if sheet_url:
                     try: target_weight = p_params['tier_weights'].loc[f'Tier {next_tier}', col_key]
                     except: target_weight = 10.0
                     
-                    one_time_seed = seed_equity_basis * (target_weight / 100.0)
-                    base_price = last_row['SOXL']
-                    loc_price = excel_round_down(base_price * (1 + start_rate/100.0), 2)
+                    one_time_seed = daily_last['SeedEquity'] * (target_weight / 100.0)
+                    loc_price = excel_round_down(last_row['SOXL'] * (1 + start_rate/100.0), 2)
 
                     def get_smart_orders(seed, start_p, range_pct, split_cnt):
                         orders = []
@@ -670,50 +542,42 @@ if sheet_url:
                         if split_cnt <= 0: return orders
                         multiplier = (1 + range_pct) if range_pct <= 0 else (1 - range_pct)
                         bot_p = excel_round_down(start_p * multiplier, 2)
-                        if bot_p <= 0: return orders
-                        qty_at_bot = seed / bot_p
-                        qty_at_top = seed / start_p
-                        fix_qty = int((qty_at_bot - qty_at_top) / split_cnt)
-                        if fix_qty < 0: fix_qty = 0
+                        fix_qty = max(0, int((seed/bot_p - seed/start_p)/split_cnt)) if bot_p > 0 else 0
                         for i in range(1, split_cnt + 1):
                             target_cum_qty = base_qty + (i * fix_qty)
-                            if target_cum_qty > 0:
-                                next_p = excel_round_down(seed / target_cum_qty, 2)
-                                if next_p > 0 and next_p < start_p:
-                                    orders.append({'price': next_p, 'qty': fix_qty, 'type': 'ADD'})
+                            next_p = excel_round_down(seed / target_cum_qty, 2)
+                            if next_p > 0 and next_p < start_p: orders.append({'price': next_p, 'qty': fix_qty, 'type': 'ADD'})
                         return orders
 
                     st.markdown("#### 🛒 매수 주문")
                     buy_list = []
-                    if len(current_holdings) < 10:
-                        real_bet = min(one_time_seed, current_cash)
+                    if len(res['CurrentHoldings']) < 10:
+                        real_bet = min(one_time_seed, daily_last['Cash'])
                         net_bet = real_bet / (1 + p_params['fee_rate'])
                         orders = get_smart_orders(net_bet, loc_price, -1*(loc_range/100.0), n_split)
-                        rem_cash = current_cash
+                        rem_cash = daily_last['Cash']
                         for i, o in enumerate(orders):
                             cost = o['price'] * o['qty']
-                            status = "주문가능"
+                            status = "주문가능" if rem_cash >= cost else "현금부족"
                             if rem_cash >= cost: rem_cash -= cost
-                            else: status = "현금부족"
                             label = "⭐ MAIN" if o['type'] == 'MAIN' else f"💧 ADD #{i}"
-                            buy_list.append({"구분": label, "가격 ($)": f"{o['price']}", "수량": f"{o['qty']}", "예상금액 ($)": f"{cost:,.0f}", "상태": status})
+                            buy_list.append({"구분": label, "가격": f"${o['price']}", "수량": f"{o['qty']}", "상태": status})
                     
                     if buy_list:
                         st.info(f"🆕 **신규 진입 (Tier {next_tier})**")
                         st.dataframe(pd.DataFrame(buy_list), hide_index=True, use_container_width=True)
                         for b in buy_list:
                             if b["상태"] == "주문가능":
-                                hts_orders.append({"전략": strategy_name, "종목": stock_name, "주문유형": "매수", "주문타입": "LOC", "가격": float(b["가격 ($)"]), "수량": int(b["수량"])})
-                    elif len(current_holdings) >= 10:
-                        st.warning("🚫 슬롯이 꽉 찼습니다")
+                                hts_orders.append({"전략": strategy_name, "종목": stock_name, "주문유형": "매수", "주문타입": "LOC", "가격": float(b["가격"].replace('$','')), "수량": int(b["수량"])})
+                    elif len(res['CurrentHoldings']) >= 10: st.warning("🚫 슬롯 꽉 참")
                     else: st.caption("매수 조건 미달")
 
                     st.divider()
                     st.markdown("#### 💰 매도 주문")
-                    if not current_holdings: st.caption("보유 중인 종목이 없습니다.")
+                    if not res['CurrentHoldings']: st.caption("보유 없음")
                     else:
                         sell_list = []
-                        for h in current_holdings:
+                        for h in res['CurrentHoldings']:
                             buy_p, days, qty, mode, tier, buy_dt = h
                             if mode == 'Bottom': prof_rate = p_params['bt_prof']; time_limit = p_params['bt_time']
                             elif mode == 'Ceiling': prof_rate = p_params['cl_prof']; time_limit = p_params['cl_time']
@@ -724,85 +588,130 @@ if sheet_url:
                             current_hold_days = days + 1
                             
                             if current_hold_days >= time_limit:
-                                order_type = "🚨 MOC (시장가)"; order_price = "Market"; note = "TimeCut 발동"
+                                order_type = "🚨 MOC (시장가)"; order_price = "Market"; note = "TimeCut"
                             else:
                                 order_type = "🎯 LOC (지정가)"; order_price = f"${target_sell_p}"; note = f"{current_hold_days}/{time_limit}일"
 
-                            sell_list.append({"티어": f"T{tier}", "평단가": f"${buy_p}", "수익률": f"{curr_return:.2f}%", "주문타입": order_type, "주문가격": order_price, "비고": note})
+                            sell_list.append({"티어": f"T{tier}", "수량": f"{qty}주", "평단": f"${buy_p}", "수익률": f"{curr_return:.2f}%", "타입": order_type, "가격": order_price, "비고": note})
                             hts_orders.append({"전략": strategy_name, "종목": stock_name, "주문유형": "매도", "주문타입": "MOC" if "MOC" in order_type else "LOC", "가격": target_sell_p if "LOC" in order_type else 0, "수량": qty})
                         
-                        def highlight_moc(row):
-                            return ['background-color: #ffcccc; color: black'] * len(row) if "MOC" in row['주문타입'] else [''] * len(row)
+                        def highlight_moc(row): return ['background-color: #ffcccc; color: black'] * len(row) if "MOC" in row['타입'] else [''] * len(row)
                         st.dataframe(pd.DataFrame(sell_list).style.apply(highlight_moc, axis=1), hide_index=True, use_container_width=True)
                 return hts_orders
 
-            orders_stable = render_dashboard(col_stable, params_s, "🛡️ 안정형 전략")
-            orders_agg = render_dashboard(col_agg, params_a, "🔥 공격형 전략")
-            
-            st.divider()
-            st.subheader("📤 HTS 자동화 연동")
-            col_hts1, col_hts2 = st.columns(2)
-            with col_hts1:
-                st.markdown("#### 🛡️ 안정형 (탭1)")
-                if orders_stable: st.dataframe(pd.DataFrame(orders_stable), hide_index=True, use_container_width=True)
-                else: st.caption("주문 없음")
-            with col_hts2:
-                st.markdown("#### 🔥 공격형 (탭2)")
-                if orders_agg: st.dataframe(pd.DataFrame(orders_agg), hide_index=True, use_container_width=True)
-                else: st.caption("주문 없음")
+            orders_stable = render_dashboard(col_stable, params_s, "🛡️ 안정형")
+            orders_agg = render_dashboard(col_agg, params_a, "🔥 공격형")
             
             st.divider()
             all_orders = orders_stable + orders_agg
-            if all_orders:
-                orders_df = pd.DataFrame(all_orders)
-                if not order_sheet_url: st.warning("⚠️ 사이드바에서 '주문 전송 시트' URL을 입력해주세요.")
-                else:
-                    col_btn1, col_btn2 = st.columns(2)
-                    with col_btn1:
-                        if st.button("🚀 지금 전송", type="primary", use_container_width=True):
-                            if send_orders_to_gsheet(orders_df, order_sheet_url, "HTS주문"): st.success("✅ 전송 완료!")
-                            else: st.error("❌ 전송 실패")
-                    with col_btn2:
-                        auto_time = st.time_input("⏰ 자동 전송 시간", value=datetime.time(22, 30))
-                        now = datetime.datetime.now().time()
-                        if 'last_auto_send' not in st.session_state: st.session_state.last_auto_send = None
-                        today_str = datetime.date.today().isoformat()
-                        if st.session_state.last_auto_send == today_str: st.info(f"✅ 오늘 {auto_time} 자동 전송 완료")
-                        elif now >= auto_time:
-                            if send_orders_to_gsheet(orders_df, order_sheet_url, "HTS주문"):
-                                st.session_state.last_auto_send = today_str
-                                st.success(f"⏰ {auto_time} 자동 전송 완료!")
-                        else: st.caption(f"⏳ {auto_time}에 자동 전송 예정")
-            else: st.caption("전송할 주문 데이터가 없습니다.")
+            if all_orders and order_sheet_url:
+                if st.button("🚀 HTS 주문 전송", type="primary"):
+                    if send_orders_to_gsheet(pd.DataFrame(all_orders), order_sheet_url): st.success("전송 완료")
+                    else: st.error("전송 실패")
 
-        with tab_bt:
-            st.info("💡 각 전략의 설정된 기간과 자본금으로 시뮬레이션을 실행합니다.")
-            if st.button("🚀 두 전략 비교 실행", type='primary'):
-                with st.spinner("듀얼 백테스트 진행 중..."):
-                    res_s = backtest_engine_web(df, params_s)
-                    res_a = backtest_engine_web(df, params_a)
+        # --- [탭 2: 백테스트 연구소] ---
+        with tab_lab:
+            st.info("🧪 여기서는 사이드바 설정과 무관하게 자유롭게 파라미터를 변경하여 테스트할 수 있습니다.")
+            c_lab1, c_lab2 = st.columns([1, 3])
+            
+            with c_lab1:
+                st.subheader("🛠️ 실험 조건")
+                # 연구소 전용 입력 폼
+                with st.form("lab_form"):
+                    lab_st_type = st.radio("기준 지표", ["MA 이격도", "RSI"], horizontal=True)
+                    lab_ma = st.number_input("이평선", value=200)
+                    lab_bt_cond = st.number_input("바닥 기준", value=30.0 if lab_st_type=='RSI' else 0.90)
+                    lab_bt_buy = st.number_input("바닥 매수%", value=15.0)
+                    lab_bt_prof = st.number_input("바닥 익절%", value=5.0)
+                    lab_cl_cond = st.number_input("천장 기준", value=70.0 if lab_st_type=='RSI' else 1.10)
+                    lab_cl_prof = st.number_input("천장 익절%", value=2.0)
+                    lab_start = st.date_input("시작일", value=datetime.date(2010,1,1))
+                    
+                    lab_run = st.form_submit_button("🚀 백테스트 실행")
+
+            with c_lab2:
+                if lab_run:
+                    # 연구용 파라미터 구성
+                    lab_params = params_s.copy() # 기본 틀 복사
+                    lab_params.update({
+                        'strategy_type': lab_st_type, 'ma_window': lab_ma, 'start_date': lab_start,
+                        'bt_cond': lab_bt_cond, 'bt_buy': lab_bt_buy, 'bt_prof': lab_bt_prof/100,
+                        'cl_cond': lab_cl_cond, 'cl_prof': lab_cl_prof/100
+                    })
+                    
+                    res_lab = backtest_engine_web(df, lab_params)
+                    if res_lab:
+                        st.subheader("📊 실험 결과")
+                        m1, m2, m3, m4 = st.columns(4)
+                        m1.metric("최종 자산", f"${res_lab['Final']:,.0f}")
+                        m2.metric("수익률", f"{res_lab['Return']:.2f}%")
+                        m3.metric("CAGR", f"{res_lab['CAGR']:.2f}%")
+                        m4.metric("MDD", f"{res_lab['MDD']:.2f}%")
+                        st.line_chart(res_lab['Series'])
+                        st.dataframe(res_lab['TradeLog'])
+
+        # --- [탭 3: 몬테카를로 최적화] ---
+        with tab_mc:
+            st.subheader("🎲 몬테카를로 시뮬레이션")
+            st.caption("랜덤한 파라미터를 수백 번 대입하여 최적의 값을 찾습니다.")
+            
+            c_mc1, c_mc2 = st.columns([1, 2])
+            with c_mc1:
+                mc_trials = st.number_input("시도 횟수", 10, 500, 30)
+                mc_type = st.radio("타겟 전략", ["MA 이격도", "RSI"], horizontal=True, key="mc_type")
                 
-                if res_s and res_a:
-                    comp_data = {
-                        '구분': ['기간', '초기 자본', '최종 자산', '수익률', 'CAGR', 'MDD', '승률'],
-                        '🛡️ 안정형': [
-                            f"{params_s['start_date']}~", f"${params_s['initial_balance']:,}",
-                            f"${res_s['Final']:,.0f}", f"{res_s['Return']:.2f}%", 
-                            f"{res_s['CAGR']:.2f}%", f"{res_s['MDD']:.2f}%", f"{res_s['WinRate']}%"
-                        ],
-                        '🔥 공격형': [
-                            f"{params_a['start_date']}~", f"${params_a['initial_balance']:,}",
-                            f"${res_a['Final']:,.0f}", f"{res_a['Return']:.2f}%", 
-                            f"{res_a['CAGR']:.2f}%", f"{res_a['MDD']:.2f}%", f"{res_a['WinRate']}%"
-                        ]
-                    }
-                    st.table(pd.DataFrame(comp_data).set_index('구분'))
-                    st.subheader("📈 자산 성장 곡선 비교")
-                    chart_df = pd.DataFrame({'Stable': res_s['Series'], 'Aggressive': res_a['Series']})
-                    st.line_chart(chart_df)
-                    c1, c2 = st.columns(2)
-                    c1.download_button("📥 안정형 로그", res_s['TradeLog'].to_csv().encode('utf-8-sig'), "stable_log.csv")
-                    c2.download_button("📥 공격형 로그", res_a['TradeLog'].to_csv().encode('utf-8-sig'), "agg_log.csv")
+                # 범위 설정
+                st.markdown("#### 랜덤 범위 설정")
+                r_buy_min, r_buy_max = st.slider("바닥 매수% 범위", 0.0, 30.0, (10.0, 20.0))
+                r_prof_min, r_prof_max = st.slider("바닥 익절% 범위", 1.0, 20.0, (2.0, 10.0))
+                
+                if st.button("🎲 시뮬레이션 시작"):
+                    results = []
+                    bar = st.progress(0)
+                    for i in range(mc_trials):
+                        # 랜덤 파라미터 생성
+                        rnd_buy = random.uniform(r_buy_min, r_buy_max)
+                        rnd_prof = random.uniform(r_prof_min, r_prof_max)
+                        
+                        mc_params = params_s.copy()
+                        mc_params.update({
+                            'strategy_type': mc_type,
+                            'bt_buy': rnd_buy,
+                            'bt_prof': rnd_prof/100,
+                            # 나머지는 고정값 사용 (단순화)
+                        })
+                        
+                        res = backtest_engine_web(df, mc_params)
+                        if res:
+                            results.append({
+                                'Trial': i+1,
+                                'Buy%': round(rnd_buy, 2),
+                                'Prof%': round(rnd_prof, 2),
+                                'CAGR': res['CAGR'],
+                                'MDD': res['MDD'],
+                                'WinRate': res['WinRate'],
+                                'Score': res['CAGR'] / abs(res['MDD']) if res['MDD'] != 0 else 0
+                            })
+                        bar.progress((i + 1) / mc_trials)
+                    
+                    st.session_state.opt_results = pd.DataFrame(results).sort_values('Score', ascending=False)
+            
+            with c_mc2:
+                if not st.session_state.opt_results.empty:
+                    st.write("🏆 **상위 결과 (Score순)**")
+                    st.dataframe(st.session_state.opt_results.head(10), use_container_width=True)
+                    
+                    best = st.session_state.opt_results.iloc[0]
+                    st.success(f"🌟 추천 파라미터: 바닥매수 {best['Buy%']}%, 바닥익절 {best['Prof%']}% (CAGR {best['CAGR']}%)")
+                    
+                    # 산점도 그리기
+                    fig, ax = plt.subplots()
+                    sc = ax.scatter(st.session_state.opt_results['MDD'], st.session_state.opt_results['CAGR'], c=st.session_state.opt_results['Score'], cmap='viridis')
+                    ax.set_xlabel('MDD (%)')
+                    ax.set_ylabel('CAGR (%)')
+                    ax.set_title('Risk vs Return')
+                    plt.colorbar(sc, label='Score')
+                    st.pyplot(fig)
 
 else:
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
