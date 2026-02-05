@@ -18,7 +18,8 @@ DEFAULT_ORDER_URL = "https://docs.google.com/spreadsheets/d/1PpgexM79XVvr23sVfi_
 st.set_page_config(page_title="쪼꼬야옹 백테스트 연구소", page_icon="📈", layout="wide")
 
 # --- [세션 상태 초기화] ---
-if 'opt_results' not in st.session_state: st.session_state.opt_results = []
+if 'opt_results' not in st.session_state: 
+    st.session_state.opt_results = pd.DataFrame() # [수정] 리스트 대신 DataFrame으로 초기화
 if 'trial_count' not in st.session_state: st.session_state.trial_count = 0
 if 'last_backtest_result' not in st.session_state: st.session_state.last_backtest_result = None
 if 'editor_ver' not in st.session_state: st.session_state.editor_ver = 0
@@ -504,7 +505,6 @@ if sheet_url:
                     last_row = res['LastData']
                     daily_last = res['DailyLog'].iloc[-1]
                     
-                    # 지표 표시
                     if p_params['strategy_type'] == 'RSI':
                         curr_val = last_row['RSI']; val_fmt = f"{curr_val:.2f}"; label_metric = "현재 RSI"
                     else:
@@ -519,7 +519,6 @@ if sheet_url:
                     st.caption(f"{label_metric}: {val_fmt} ({curr_phase})")
                     st.divider()
 
-                    # 매수 주문
                     n_split = int(p_params['add_order_cnt'])
                     loc_range = p_params['loc_range']
                     next_tier = min(len(res['CurrentHoldings']) + 1, 10)
@@ -612,31 +611,52 @@ if sheet_url:
         # --- [탭 2: 백테스트 연구소] ---
         with tab_lab:
             st.info("🧪 여기서는 사이드바 설정과 무관하게 자유롭게 파라미터를 변경하여 테스트할 수 있습니다.")
-            c_lab1, c_lab2 = st.columns([1, 3])
+            c_lab_in, c_lab_out = st.columns([1, 2])
             
-            with c_lab1:
+            with c_lab_in:
                 st.subheader("🛠️ 실험 조건")
-                # 연구소 전용 입력 폼
                 with st.form("lab_form"):
                     lab_st_type = st.radio("기준 지표", ["MA 이격도", "RSI"], horizontal=True)
-                    lab_ma = st.number_input("이평선", value=200)
-                    lab_bt_cond = st.number_input("바닥 기준", value=30.0 if lab_st_type=='RSI' else 0.90)
-                    lab_bt_buy = st.number_input("바닥 매수%", value=15.0)
-                    lab_bt_prof = st.number_input("바닥 익절%", value=5.0)
-                    lab_cl_cond = st.number_input("천장 기준", value=70.0 if lab_st_type=='RSI' else 1.10)
-                    lab_cl_prof = st.number_input("천장 익절%", value=2.0)
-                    lab_start = st.date_input("시작일", value=datetime.date(2010,1,1))
                     
-                    lab_run = st.form_submit_button("🚀 백테스트 실행")
+                    st.markdown("#### ⚙️ 기본")
+                    l_ma = st.number_input("이평선 (MA)", value=200)
+                    l_add = st.number_input("분할 횟수", value=4)
+                    l_rng = st.number_input("LOC 범위 (-%)", value=20.0)
+                    
+                    st.markdown("#### 📉 바닥 (Bottom)")
+                    l_bc = st.number_input("기준", value=30.0 if lab_st_type=='RSI' else 0.90)
+                    l_bb = st.number_input("매수%", value=15.0)
+                    l_bp = st.number_input("익절%", value=5.0)
+                    l_bt = st.number_input("존버일", value=10)
 
-            with c_lab2:
+                    st.markdown("#### ➖ 중간 (Middle)")
+                    l_mb = st.number_input("매수%", value=-0.01)
+                    l_mp = st.number_input("익절%", value=2.8)
+                    l_mt = st.number_input("존버일", value=15)
+
+                    st.markdown("#### 📈 천장 (Ceiling)")
+                    l_cc = st.number_input("기준", value=70.0 if lab_st_type=='RSI' else 1.10)
+                    l_cb = st.number_input("매수%", value=-0.1)
+                    l_cp = st.number_input("익절%", value=1.5)
+                    l_ct = st.number_input("존버일", value=40)
+                    
+                    st.markdown("#### 📅 기간")
+                    today = datetime.date.today()
+                    l_start = st.date_input("시작일", value=datetime.date(2010,1,1))
+                    l_end = st.date_input("종료일", value=today) # 기본값 오늘
+                    
+                    lab_run = st.form_submit_button("🚀 백테스트 실행", type="primary")
+
+            with c_lab_out:
                 if lab_run:
-                    # 연구용 파라미터 구성
-                    lab_params = params_s.copy() # 기본 틀 복사
+                    lab_params = params_s.copy() # 기본 틀
                     lab_params.update({
-                        'strategy_type': lab_st_type, 'ma_window': lab_ma, 'start_date': lab_start,
-                        'bt_cond': lab_bt_cond, 'bt_buy': lab_bt_buy, 'bt_prof': lab_bt_prof/100,
-                        'cl_cond': lab_cl_cond, 'cl_prof': lab_cl_prof/100
+                        'strategy_type': lab_st_type, 'ma_window': l_ma, 
+                        'start_date': l_start, 'end_date': l_end,
+                        'add_order_cnt': l_add, 'loc_range': l_rng,
+                        'bt_cond': l_bc, 'bt_buy': l_bb, 'bt_prof': l_bp/100, 'bt_time': l_bt,
+                        'md_buy': l_mb, 'md_prof': l_mp/100, 'md_time': l_mt,
+                        'cl_cond': l_cc, 'cl_buy': l_cb, 'cl_prof': l_cp/100, 'cl_time': l_ct
                     })
                     
                     res_lab = backtest_engine_web(df, lab_params)
@@ -648,7 +668,7 @@ if sheet_url:
                         m3.metric("CAGR", f"{res_lab['CAGR']:.2f}%")
                         m4.metric("MDD", f"{res_lab['MDD']:.2f}%")
                         st.line_chart(res_lab['Series'])
-                        st.dataframe(res_lab['TradeLog'])
+                        st.dataframe(res_lab['TradeLog'], use_container_width=True)
 
         # --- [탭 3: 몬테카를로 최적화] ---
         with tab_mc:
@@ -660,7 +680,6 @@ if sheet_url:
                 mc_trials = st.number_input("시도 횟수", 10, 500, 30)
                 mc_type = st.radio("타겟 전략", ["MA 이격도", "RSI"], horizontal=True, key="mc_type")
                 
-                # 범위 설정
                 st.markdown("#### 랜덤 범위 설정")
                 r_buy_min, r_buy_max = st.slider("바닥 매수% 범위", 0.0, 30.0, (10.0, 20.0))
                 r_prof_min, r_prof_max = st.slider("바닥 익절% 범위", 1.0, 20.0, (2.0, 10.0))
@@ -669,7 +688,6 @@ if sheet_url:
                     results = []
                     bar = st.progress(0)
                     for i in range(mc_trials):
-                        # 랜덤 파라미터 생성
                         rnd_buy = random.uniform(r_buy_min, r_buy_max)
                         rnd_prof = random.uniform(r_prof_min, r_prof_max)
                         
@@ -678,7 +696,6 @@ if sheet_url:
                             'strategy_type': mc_type,
                             'bt_buy': rnd_buy,
                             'bt_prof': rnd_prof/100,
-                            # 나머지는 고정값 사용 (단순화)
                         })
                         
                         res = backtest_engine_web(df, mc_params)
@@ -697,14 +714,14 @@ if sheet_url:
                     st.session_state.opt_results = pd.DataFrame(results).sort_values('Score', ascending=False)
             
             with c_mc2:
-                if not st.session_state.opt_results.empty:
+                # [수정] DataFrame인지 확인 후 .empty 체크 (오류 해결)
+                if isinstance(st.session_state.opt_results, pd.DataFrame) and not st.session_state.opt_results.empty:
                     st.write("🏆 **상위 결과 (Score순)**")
                     st.dataframe(st.session_state.opt_results.head(10), use_container_width=True)
                     
                     best = st.session_state.opt_results.iloc[0]
                     st.success(f"🌟 추천 파라미터: 바닥매수 {best['Buy%']}%, 바닥익절 {best['Prof%']}% (CAGR {best['CAGR']}%)")
                     
-                    # 산점도 그리기
                     fig, ax = plt.subplots()
                     sc = ax.scatter(st.session_state.opt_results['MDD'], st.session_state.opt_results['CAGR'], c=st.session_state.opt_results['Score'], cmap='viridis')
                     ax.set_xlabel('MDD (%)')
