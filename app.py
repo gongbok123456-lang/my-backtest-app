@@ -611,12 +611,11 @@ if sheet_url:
         # --- [탭 2: 백테스트 연구소] ---
         with tab_lab:
             st.info("🧪 여기서는 사이드바 설정과 무관하게 자유롭게 파라미터를 변경하여 테스트할 수 있습니다.")
-            c_lab_in, c_lab_out = st.columns([1.2, 2.8]) # [변경] 입력칸 비율 축소 (가독성 향상)
+            c_lab_in, c_lab_out = st.columns([1.2, 2.8])
             
             with c_lab_in:
                 st.subheader("🛠️ 실험 조건")
                 with st.form("lab_form"):
-                    # 1. 최상단: 날짜 및 전략 타입 (2열)
                     c_l1, c_l2 = st.columns(2)
                     lab_st_type = c_l1.radio("기준", ["MA 이격도", "RSI"])
                     l_ma = c_l2.number_input("이평선", value=200)
@@ -625,29 +624,23 @@ if sheet_url:
                     l_start = c_l1.date_input("시작", value=datetime.date(2010,1,1))
                     l_end = c_l2.date_input("종료", value=today)
                     
-                    # 2. 중간: 기본 설정 (3열)
                     c_b1, c_b2, c_b3 = st.columns(3)
                     l_add = c_b1.number_input("분할", value=4)
                     l_rng = c_b2.number_input("범위(-%)", value=20.0)
                     
                     st.divider()
-                    
-                    # 3. 핵심: 탭을 사용하여 공간 절약 (Bottom / Middle / Ceiling)
                     t_bot, t_mid, t_ceil = st.tabs(["📉 바닥", "➖ 중간", "📈 천장"])
-                    
                     with t_bot:
                         l_bc = st.number_input("진입 기준 (이하)", value=30.0 if lab_st_type=='RSI' else 0.90)
                         c_bt1, c_bt2 = st.columns(2)
                         l_bb = c_bt1.number_input("매수(%)", value=15.0)
                         l_bp = c_bt2.number_input("익절(%)", value=5.0)
                         l_bt = st.number_input("존버일", value=10)
-                        
                     with t_mid:
                         c_md1, c_md2 = st.columns(2)
                         l_mb = c_md1.number_input("중간 매수(%)", value=-0.01)
                         l_mp = c_md2.number_input("중간 익절(%)", value=2.8)
                         l_mt = st.number_input("중간 존버일", value=15)
-                        
                     with t_ceil:
                         l_cc = st.number_input("진입 기준 (이상)", value=70.0 if lab_st_type=='RSI' else 1.10)
                         c_cl1, c_cl2 = st.columns(2)
@@ -655,17 +648,15 @@ if sheet_url:
                         l_cp = c_cl2.number_input("천장 익절(%)", value=1.5)
                         l_ct = st.number_input("천장 존버일", value=40)
 
-                    # 4. 하단: 비중 설정 (Expander로 숨김)
                     with st.expander("⚖️ 티어별 비중 설정"):
                         lab_default_w = pd.DataFrame({'Tier': [f'Tier {i}' for i in range(1, 11)], 'Bottom': [10.0]*10, 'Middle': [10.0]*10, 'Ceiling': [10.0]*10}).set_index('Tier')
                         lab_weights = st.data_editor(lab_default_w, key="lab_w_editor", use_container_width=True)
 
-                    # 5. 실행 버튼 (이제 위쪽에 보임)
                     lab_run = st.form_submit_button("🚀 백테스트 실행", type="primary", use_container_width=True)
 
             with c_lab_out:
                 if lab_run:
-                    lab_params = params_s.copy() # 기본 틀
+                    lab_params = params_s.copy()
                     lab_params.update({
                         'strategy_type': lab_st_type, 'ma_window': l_ma, 
                         'start_date': l_start, 'end_date': l_end,
@@ -678,7 +669,6 @@ if sheet_url:
                     
                     res_lab = backtest_engine_web(df, lab_params)
                     if res_lab:
-                        # 결과 요약 (Card View)
                         with st.container(border=True):
                             m1, m2, m3, m4, m5 = st.columns(5)
                             m1.metric("최종 자산", f"${res_lab['Final']:,.0f}")
@@ -686,49 +676,75 @@ if sheet_url:
                             m3.metric("CAGR", f"{res_lab['CAGR']:.2f}%")
                             m4.metric("MDD", f"{res_lab['MDD']:.2f}%")
                             m5.metric("승률", f"{res_lab['WinRate']}%")
-                        
-                        # 차트
                         st.subheader("📈 자산 추이")
                         st.line_chart(res_lab['Series'], color="#00FF00")
-                        
-                        # 로그
                         st.subheader("📜 매매 기록")
                         st.dataframe(res_lab['TradeLog'], use_container_width=True, height=400)
 
         # --- [탭 3: 몬테카를로 최적화] ---
         with tab_mc:
             st.subheader("🎲 몬테카를로 시뮬레이션")
-            st.caption("랜덤한 파라미터를 수백 번 대입하여 최적의 값을 찾습니다.")
+            st.caption("바닥/천장 기준, 매수/익절/존버일을 무작위로 조합하여 최적의 값을 찾습니다.")
             
             c_mc1, c_mc2 = st.columns([1, 2])
             with c_mc1:
-                mc_trials = st.number_input("시도 횟수", 10, 500, 30)
-                mc_type = st.radio("타겟 전략", ["MA 이격도", "RSI"], horizontal=True, key="mc_type")
+                with st.form("mc_form"):
+                    mc_trials = st.number_input("1회 시도 횟수", 10, 500, 50)
+                    mc_type = st.radio("전략 타입", ["MA 이격도", "RSI"], horizontal=True)
+                    
+                    st.markdown("#### 🎯 랜덤 범위 설정 (Bottom 위주)")
+                    
+                    with st.expander("1. 진입/탈출 기준 (Threshold)", expanded=True):
+                        if mc_type == 'RSI':
+                            r_bc_min, r_bc_max = st.slider("바닥 기준 (RSI)", 20, 50, (25, 35))
+                            r_cc_min, r_cc_max = st.slider("천장 기준 (RSI)", 60, 90, (70, 80))
+                        else:
+                            r_bc_min, r_bc_max = st.slider("바닥 기준 (이격도)", 0.8, 1.0, (0.85, 0.95))
+                            r_cc_min, r_cc_max = st.slider("천장 기준 (이격도)", 1.0, 1.3, (1.05, 1.15))
+
+                    with st.expander("2. 거래 파라미터 (Bottom)", expanded=True):
+                        r_buy_min, r_buy_max = st.slider("매수% 범위", 0.0, 30.0, (10.0, 20.0))
+                        r_prof_min, r_prof_max = st.slider("익절% 범위", 1.0, 20.0, (3.0, 10.0))
+                        r_time_min, r_time_max = st.slider("존버일(TimeCut) 범위", 5, 60, (10, 30))
+
+                    mc_run = st.form_submit_button("🎲 시뮬레이션 시작")
                 
-                st.markdown("#### 랜덤 범위 설정")
-                r_buy_min, r_buy_max = st.slider("바닥 매수% 범위", 0.0, 30.0, (10.0, 20.0))
-                r_prof_min, r_prof_max = st.slider("바닥 익절% 범위", 1.0, 20.0, (2.0, 10.0))
-                
-                if st.button("🎲 시뮬레이션 시작"):
-                    results = []
+                if st.button("🗑️ 기록 초기화 (Reset)"):
+                    st.session_state.opt_results = pd.DataFrame()
+                    st.success("기록이 초기화되었습니다.")
+
+            with c_mc2:
+                if mc_run:
+                    new_results = []
                     bar = st.progress(0)
                     for i in range(mc_trials):
+                        # 랜덤 값 생성
+                        rnd_bc = random.uniform(r_bc_min, r_bc_max)
+                        rnd_cc = random.uniform(r_cc_min, r_cc_max)
                         rnd_buy = random.uniform(r_buy_min, r_buy_max)
                         rnd_prof = random.uniform(r_prof_min, r_prof_max)
+                        rnd_time = random.randint(r_time_min, r_time_max)
                         
+                        # 파라미터 구성
                         mc_params = params_s.copy()
                         mc_params.update({
                             'strategy_type': mc_type,
+                            'bt_cond': rnd_bc,
+                            'cl_cond': rnd_cc,
                             'bt_buy': rnd_buy,
                             'bt_prof': rnd_prof/100,
+                            'bt_time': rnd_time
                         })
                         
                         res = backtest_engine_web(df, mc_params)
                         if res:
-                            results.append({
-                                'Trial': i+1,
+                            new_results.append({
+                                'Type': mc_type,
+                                'Bottom': round(rnd_bc, 2),
+                                'Ceiling': round(rnd_cc, 2),
                                 'Buy%': round(rnd_buy, 2),
                                 'Prof%': round(rnd_prof, 2),
+                                'Time': rnd_time,
                                 'CAGR': res['CAGR'],
                                 'MDD': res['MDD'],
                                 'WinRate': res['WinRate'],
@@ -736,22 +752,31 @@ if sheet_url:
                             })
                         bar.progress((i + 1) / mc_trials)
                     
-                    st.session_state.opt_results = pd.DataFrame(results).sort_values('Score', ascending=False)
-            
-            with c_mc2:
-                # [수정] DataFrame인지 확인 후 .empty 체크 (오류 해결)
+                    # 결과 누적 (Memory)
+                    if new_results:
+                        new_df = pd.DataFrame(new_results)
+                        if not st.session_state.opt_results.empty:
+                            st.session_state.opt_results = pd.concat([st.session_state.opt_results, new_df], ignore_index=True)
+                        else:
+                            st.session_state.opt_results = new_df
+                        
+                        # 중복 제거 및 정렬
+                        st.session_state.opt_results = st.session_state.opt_results.drop_duplicates().sort_values('Score', ascending=False)
+
+                # 결과 표시
                 if isinstance(st.session_state.opt_results, pd.DataFrame) and not st.session_state.opt_results.empty:
-                    st.write("🏆 **상위 결과 (Score순)**")
+                    st.write(f"🏆 **누적 랭킹 TOP 10 (총 {len(st.session_state.opt_results)}개 데이터)**")
                     st.dataframe(st.session_state.opt_results.head(10), use_container_width=True)
                     
                     best = st.session_state.opt_results.iloc[0]
-                    st.success(f"🌟 추천 파라미터: 바닥매수 {best['Buy%']}%, 바닥익절 {best['Prof%']}% (CAGR {best['CAGR']}%)")
+                    st.success(f"🌟 [BEST] {best['Type']} | 바닥기준 {best['Bottom']} | 천장기준 {best['Ceiling']} | 매수 {best['Buy%']}% | 익절 {best['Prof%']}% | 존버 {best['Time']}일 (CAGR {best['CAGR']}%)")
                     
+                    # 산점도
                     fig, ax = plt.subplots()
-                    sc = ax.scatter(st.session_state.opt_results['MDD'], st.session_state.opt_results['CAGR'], c=st.session_state.opt_results['Score'], cmap='viridis')
+                    sc = ax.scatter(st.session_state.opt_results['MDD'], st.session_state.opt_results['CAGR'], c=st.session_state.opt_results['Score'], cmap='viridis', alpha=0.6)
                     ax.set_xlabel('MDD (%)')
                     ax.set_ylabel('CAGR (%)')
-                    ax.set_title('Risk vs Return')
+                    ax.set_title('Risk vs Return (Monte Carlo)')
                     plt.colorbar(sc, label='Score')
                     st.pyplot(fig)
 
