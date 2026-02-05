@@ -243,9 +243,6 @@ def calculate_rsi(series, period=14):
     rsi = 100 - (100 / (1 + rs))
     return rsi
 
-# ... (기존 유틸리티 함수들: calculate_rsi 등 아래에 붙여넣기) ...
-
-# [이 함수를 들여쓰기 없이 맨 앞에 붙여서 정의하세요]
 def render_strategy_inputs(suffix, key_prefix):
     st.subheader(f"📊 {key_prefix} 기본 설정")
     
@@ -277,6 +274,7 @@ def render_strategy_inputs(suffix, key_prefix):
     st.markdown("---")
     st.markdown(f"**🎯 {strategy_mode} 상세 파라미터**")
     
+    # 모드에 따른 추천값 설정
     if "RSI" in strategy_mode:
         st.caption("💡 RSI 추천값: 바닥(30~35), 천장(70~75)")
         default_bt = 30.0 
@@ -286,6 +284,7 @@ def render_strategy_inputs(suffix, key_prefix):
         default_bt = 0.90 
         default_cl = 1.10 
 
+    # 3. 바닥/천장 설정
     st.markdown("##### 📉 바닥 (Bottom)")
     c1, c2 = st.columns(2)
     k_bc=f"bc_{suffix}"; k_bb=f"bb_{suffix}"
@@ -313,9 +312,9 @@ def render_strategy_inputs(suffix, key_prefix):
     cl_prof = c7.number_input("익절%", 0.0, 100.0, value=3.0, step=0.5, key=k_cp)
     cl_time = c8.number_input("보유일(TimeCut)", 0, 365, value=3, step=1, key=k_ct)
 
+    # 4. 티어 비중 설정 (기존 유지)
     st.markdown("---")
     st.write("⚖️ **티어별 비중**")
-    
     base_key = f"base_w_{suffix}"
     if base_key in st.session_state:
         initial_data = st.session_state[base_key]
@@ -329,7 +328,6 @@ def render_strategy_inputs(suffix, key_prefix):
 
     current_ver = st.session_state.editor_ver
     unique_key = f"w_{suffix}_v{current_ver}"
-    
     edited_w = st.data_editor(
         initial_data, 
         key=unique_key, 
@@ -341,15 +339,34 @@ def render_strategy_inputs(suffix, key_prefix):
     )
     st.session_state[f"current_w_{suffix}"] = edited_w
 
+    # [중요 수정] 백테스트 엔진이 요구하는 키 이름으로 정확히 매핑하여 반환
     return {
         'strategy_mode': strategy_mode,
         'start_date': start_date, 'end_date': end_date,
         'initial_balance': balance, 'ma_window': ma_window,
-        'bt_cond': bt_cond, 'bt_buy_thr': bt_buy/100, 
-        'bt_prof_thr': bt_prof/100, 'bt_time_cut': bt_time,
+        
+        # 바닥 (Bottom)
+        'bt_cond': bt_cond, 
+        'bt_buy': bt_buy,   # _thr 제거, % 값 그대로 전달
+        'bt_prof': bt_prof, # _thr 제거
+        'bt_time': bt_time,
+        'add_order_cnt': bt_add_cnt, # bt_ 접두어 뗀 키 추가
         'bt_add_order_cnt': bt_add_cnt,
-        'cl_cond': cl_cond, 'cl_buy_thr': cl_buy/100,
-        'cl_prof_thr': cl_prof/100, 'cl_time_cut': cl_time,
+        
+        # 천장 (Ceiling)
+        'cl_cond': cl_cond, 
+        'cl_buy': cl_buy, 
+        'cl_prof': cl_prof, 
+        'cl_time': cl_time,
+        
+        # 중간 (Middle) - UI에는 없지만 에러 방지용 기본값
+        'md_buy': 0.0, 'md_prof': 0.0, 'md_time': 999,
+        
+        # 기타 필수 설정
+        'loc_range': bt_buy, # loc 범위는 매수점과 동일하게 설정
+        'fee_rate': 0.0007,  # 기본 수수료
+        'profit_rate': 0.0,  # 복리/단리 설정용 (기본 0)
+        'loss_rate': 0.0,
         'tier_weights': edited_w
     }
 
@@ -793,6 +810,7 @@ if sheet_url:
 
 else:
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
 
 
 
