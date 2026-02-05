@@ -178,10 +178,10 @@ def load_settings_from_gsheet(sheet_url):
             else:
                 # [2] 일반 변수 로드
                 try:
-                    # [수정] 종료일(ed_)은 불러오지 않음 (항상 오늘로 설정하기 위해)
+                    # 종료일(ed_)은 불러오지 않음
                     if key.startswith('sd_'): 
                         st.session_state[key] = datetime.datetime.strptime(val_str, '%Y-%m-%d').date()
-                    elif not key.startswith('ed_'): # 종료일 키는 건너뜀
+                    elif not key.startswith('ed_'):
                         if '.' in val_str: st.session_state[key] = float(val_str)
                         else: st.session_state[key] = int(val_str)
                 except:
@@ -236,15 +236,24 @@ def calculate_loc_quantity(seed_amount, order_price, close_price, buy_range, max
 
     return final_qty
 
-# --- [백테스트 엔진] ---
+# --- [백테스트 엔진: RSI 추가] ---
 def backtest_engine_web(df, params):
     df = df.copy()
     
+    # 1. 기본 전처리
     df['QQQ'] = pd.to_numeric(df['QQQ'], errors='coerce')
     ma_win = int(params['ma_window'])
     df['MA_Daily'] = df['QQQ'].rolling(window=ma_win, min_periods=1).mean()
     df['Log_Start_Price'] = df['QQQ'].shift(ma_win - 1)
 
+    # 2. RSI 계산 (14일 기준)
+    delta = df['SOXL'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    df['RSI'] = 100 - (100 / (1 + rs))
+
+    # 3. 주간 데이터 처리 (휴장일 대응)
     weekly_resampled = df[['QQQ', 'MA_Daily', 'Log_Start_Price']].resample('W-FRI').last()
     weekly_resampled.columns = ['QQQ_Fri', 'MA_Fri', 'Start_Price_Fri']
     weekly_resampled['Disp_Fri'] = weekly_resampled['QQQ_Fri'] / weekly_resampled['MA_Fri']
@@ -260,6 +269,7 @@ def backtest_engine_web(df, params):
     df['Log_Start_Price'] = df_mapped['Start_Price_Fri']
     df['Prev_Close'] = df['SOXL'].shift(1)
     
+    # 날짜 필터링
     start_dt = pd.to_datetime(params['start_date'])
     end_dt = pd.to_datetime(params['end_date'])
     df = df.sort_index()
@@ -298,11 +308,23 @@ def backtest_engine_web(df, params):
         if pd.isna(today_close) or today_close <= 0: continue
         if params.get('force_round', True): today_close = round(today_close, 2)
         
-        disp = row['Basis_Disp'] if not pd.isna(row['Basis_Disp']) else 1.0
+        # [핵심] 전략 기준에 따른 Phase 결정
+        strat_type = params.get('strategy_type', 'MA 이격도')
+        current_disp = row['Basis_Disp'] if not pd.isna(row['Basis_Disp']) else 1.0
+        current_rsi = row['RSI'] if not pd.isna(row['RSI']) else 50.0
         
-        if disp < params['bt_cond']: phase = 'Bottom'
-        elif disp > params['cl_cond']: phase = 'Ceiling'
-        else: phase = 'Middle'
+        if strat_type == 'RSI':
+            # RSI 기준 (예: 30 미만 Bottom, 70 초과 Ceiling)
+            if current_rsi < params['bt_cond']: phase = 'Bottom'
+            elif current_rsi > params['cl_cond']: phase = 'Ceiling'
+            else: phase = 'Middle'
+            disp_val_for_log = current_rsi # 로그용 변수 재활용
+        else:
+            # MA 이격도 기준 (예: 0.9 미만 Bottom, 1.1 초과 Ceiling)
+            if current_disp < params['bt_cond']: phase = 'Bottom'
+            elif current_disp > params['cl_cond']: phase = 'Ceiling'
+            else: phase = 'Middle'
+            disp_val_for_log = current_disp
 
         conf = strategy[phase]
         tiers_sold = set()
@@ -336,7 +358,7 @@ def backtest_engine_web(df, params):
                 trade_log.append({
                     'Date': dates[i], 'Type': 'Sell', 'Tier': tier, 'Phase': mode, 
                     'Ref_Date': row['Log_Ref_Date'].strftime('%Y-%m-%d') if pd.notnull(row['Log_Ref_Date']) else '-',
-                    'QQQ_Fri': row['Log_QQQ_Fri'], 'MA_Calc': row['Log_MA_Fri'], 'Disp': disp,
+                    'QQQ_Fri': row['Log_QQQ_Fri'], 'MA_Calc': row['Log_MA_Fri'], 'Disp': disp_val_for_log,
                     'Start_P': row['Log_Start_Price'], 'Price': today_close, 'Qty': qty, 
                     'Profit': real_profit, 'Reason': reason
                 })
@@ -384,11 +406,12 @@ def backtest_engine_web(df, params):
                         trade_log.append({
                             'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase, 
                             'Ref_Date': row['Log_Ref_Date'].strftime('%Y-%m-%d') if pd.notnull(row['Log_Ref_Date']) else '-',
-                            'QQQ_Fri': row['Log_QQQ_Fri'], 'MA_Calc': row['Log_MA_Fri'], 'Disp': disp,
+                            'QQQ_Fri': row['Log_QQQ_Fri'], 'MA_Calc': row['Log_MA_Fri'], 'Disp': disp_val_for_log,
                             'Start_P': row['Log_Start_Price'], 'Price': today_close, 'Qty': real_qty, 
                             'Profit': 0, 'Reason': 'LOC'
                         })
         
+        # 투자금 갱신
         if daily_net_profit_sum != 0:
             rate = params['profit_rate'] if daily_net_profit_sum > 0 else params['loss_rate']
             seed_equity += daily_net_profit_sum * rate
@@ -458,10 +481,16 @@ with st.sidebar:
         k_sd = f"sd_{suffix}"; k_ed = f"ed_{suffix}"
         
         start_date = c_d1.date_input("시작일", value=st.session_state.get(k_sd, datetime.date(2010, 1, 1)), max_value=today, key=k_sd)
-        
-        # [수정] 종료일은 무조건 '오늘'을 기본값으로 사용 (저장된 값 무시)
         end_date = c_d2.date_input("종료일", value=today, max_value=today, key=k_ed)
         
+        st.markdown("---")
+        # [신규] 전략 기준 선택 (MA or RSI)
+        st.write("⚙️ **전략 기준 선택**")
+        k_type = f"st_type_{suffix}"
+        strategy_type = st.radio("매매 기준 지표", ["MA 이격도", "RSI"], 
+                                 index=0 if st.session_state.get(k_type, "MA 이격도") == "MA 이격도" else 1, 
+                                 horizontal=True, key=k_type)
+
         st.markdown("---")
         st.write("⚙️ **파라미터 설정**")
         
@@ -480,10 +509,20 @@ with st.sidebar:
         k_ma = f"ma_{suffix}"
         ma_win = st.number_input("이평선 (MA)", 50, 300, st.session_state.get(k_ma, 200), key=k_ma)
 
+        # [수정] 전략 타입에 따라 라벨과 기본값 변경
+        if strategy_type == 'RSI':
+            lbl_bt = "RSI 기준 (이하)"; def_bt = 30.0; step_val = 1.0
+            lbl_cl = "RSI 기준 (이상)"; def_cl = 70.0
+        else:
+            lbl_bt = "이격도 기준 (이하)"; def_bt = 0.90; step_val = 0.01
+            lbl_cl = "이격도 기준 (이상)"; def_cl = 1.10
+
         st.markdown("##### 📉 바닥 (Bottom)")
         c1, c2 = st.columns(2)
         k_bc=f"bc_{suffix}"; k_bb=f"bb_{suffix}"; k_bp=f"bp_{suffix}"; k_bt=f"bt_{suffix}"
-        bt_cond = c1.number_input("기준 이격", 0.8, 1.0, st.session_state.get(k_bc, 0.90), step=0.01, key=k_bc)
+        
+        # 동적 라벨 적용
+        bt_cond = c1.number_input(lbl_bt, 0.0, 100.0, st.session_state.get(k_bc, def_bt), step=step_val, key=k_bc)
         bt_buy = c2.number_input("매수점%", -30.0, 30.0, st.session_state.get(k_bb, 15.0), step=0.1, key=k_bb)
         bt_prof = c1.number_input("익절%", 0.0, 100.0, st.session_state.get(k_bp, 2.5), step=0.1, key=k_bp)
         bt_time = c2.number_input("존버일", 1, 100, st.session_state.get(k_bt, 10), key=k_bt)
@@ -498,7 +537,8 @@ with st.sidebar:
         st.markdown("##### 📈 천장 (Ceiling)")
         c5, c6 = st.columns(2)
         k_cc=f"cc_{suffix}"; k_cb=f"cb_{suffix}"; k_cp=f"cp_{suffix}"; k_ct=f"ct_{suffix}"
-        cl_cond = c5.number_input("기준 이격", 1.0, 1.5, st.session_state.get(k_cc, 1.10), step=0.01, key=k_cc)
+        
+        cl_cond = c5.number_input(lbl_cl, 0.0, 100.0, st.session_state.get(k_cc, def_cl), step=step_val, key=k_cc)
         cl_buy = c6.number_input("매수점%", -30.0, 30.0, st.session_state.get(k_cb, -0.1), step=0.1, key=k_cb)
         cl_prof = c5.number_input("익절%", 0.0, 100.0, st.session_state.get(k_cp, 1.5), step=0.1, key=k_cp)
         cl_time = c6.number_input("존버일", 1, 100, st.session_state.get(k_ct, 40), key=k_ct)
@@ -532,6 +572,7 @@ with st.sidebar:
         st.session_state[f"current_w_{suffix}"] = edited_w
 
         return {
+            'strategy_type': strategy_type, # [추가] 전략 타입 전달
             'start_date': start_date, 'end_date': end_date,
             'initial_balance': balance,
             'fee_rate': fee/100,
@@ -574,7 +615,8 @@ if sheet_url:
             def render_dashboard(col, p_params, strategy_name, stock_name="SOXL"):
                 hts_orders = []
                 with col:
-                    st.subheader(f"{strategy_name}")
+                    # 제목 옆에 전략 타입 표시
+                    st.subheader(f"{strategy_name} ({p_params['strategy_type']})")
                     res = backtest_engine_web(df, p_params)
                     if not res:
                         st.error("데이터 부족 (기간 확인)")
@@ -586,14 +628,23 @@ if sheet_url:
                     seed_equity_basis = daily_last['SeedEquity']
                     current_holdings = res['CurrentHoldings']
                     
-                    disp = last_row['Basis_Disp']
-                    if disp < p_params['bt_cond']: curr_phase = "📉 바닥"
-                    elif disp > p_params['cl_cond']: curr_phase = "📈 천장"
+                    # [표시] 현재 지표값 (RSI 또는 이격도)
+                    if p_params['strategy_type'] == 'RSI':
+                        curr_val = last_row['RSI']
+                        val_fmt = f"{curr_val:.2f}"
+                        label_metric = "현재 RSI"
+                    else:
+                        curr_val = last_row['Basis_Disp']
+                        val_fmt = f"{curr_val:.4f}"
+                        label_metric = "현재 이격도"
+
+                    if curr_val < p_params['bt_cond']: curr_phase = "📉 바닥"
+                    elif curr_val > p_params['cl_cond']: curr_phase = "📈 천장"
                     else: curr_phase = "➖ 중간"
                     
                     st.metric("시드 자산 (확정)", f"${seed_equity_basis:,.0f}")
                     st.metric("보유 현금", f"${current_cash:,.0f}")
-                    st.caption(f"이격도: {disp:.4f} ({curr_phase}) | 초기자본: ${p_params['initial_balance']:,}")
+                    st.caption(f"{label_metric}: {val_fmt} ({curr_phase}) | 초기자본: ${p_params['initial_balance']:,}")
                     st.divider()
 
                     n_split = int(p_params['add_order_cnt'])
