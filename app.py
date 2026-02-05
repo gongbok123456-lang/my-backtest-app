@@ -20,6 +20,10 @@ st.set_page_config(page_title="쪼꼬야옹 백테스트 연구소", page_icon="
 # --- [세션 상태 초기화] ---
 if 'opt_results' not in st.session_state: 
     st.session_state.opt_results = pd.DataFrame()
+# [안전장치] 혹시 리스트로 잘못 저장된 경우 데이터프레임으로 변환
+if isinstance(st.session_state.opt_results, list):
+    st.session_state.opt_results = pd.DataFrame(st.session_state.opt_results)
+
 if 'trial_count' not in st.session_state: st.session_state.trial_count = 0
 if 'last_backtest_result' not in st.session_state: st.session_state.last_backtest_result = None
 if 'editor_ver' not in st.session_state: st.session_state.editor_ver = 0
@@ -763,7 +767,7 @@ if sheet_url:
                         # 중복 제거 및 정렬
                         st.session_state.opt_results = st.session_state.opt_results.drop_duplicates().sort_values('Score', ascending=False)
 
-                # 결과 표시
+                # [안전장치 추가됨] 결과 표시
                 if isinstance(st.session_state.opt_results, pd.DataFrame) and not st.session_state.opt_results.empty:
                     st.write(f"🏆 **누적 랭킹 TOP 10 (총 {len(st.session_state.opt_results)}개 데이터)**")
                     st.dataframe(st.session_state.opt_results.head(10), use_container_width=True)
