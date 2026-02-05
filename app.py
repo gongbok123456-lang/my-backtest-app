@@ -248,22 +248,41 @@ def backtest_engine_web(df, params):
     df = df.copy()
     
     df['QQQ'] = pd.to_numeric(df['QQQ'], errors='coerce')
+    
+    # 1. 이평선 계산 (기존 로직)
     ma_win = int(params['ma_window'])
     df['MA_Daily'] = df['QQQ'].rolling(window=ma_win, min_periods=1).mean()
     df['Log_Start_Price'] = df['QQQ'].shift(ma_win - 1)
+    
+    # 2. RSI 계산 (추가된 로직)
+    df['RSI_Daily'] = calculate_rsi(df['QQQ'], period=14)
 
-    weekly_resampled = df[['QQQ', 'MA_Daily', 'Log_Start_Price']].resample('W-FRI').last()
-    weekly_resampled.columns = ['QQQ_Fri', 'MA_Fri', 'Start_Price_Fri']
+    # 주간 데이터로 리샘플링 (두 지표 모두 금요일 기준값 추출)
+    weekly_resampled = df[['QQQ', 'MA_Daily', 'RSI_Daily', 'Log_Start_Price']].resample('W-FRI').last()
+    weekly_resampled.columns = ['QQQ_Fri', 'MA_Fri', 'RSI_Fri', 'Start_Price_Fri']
+    
+    # 이격도 계산
     weekly_resampled['Disp_Fri'] = weekly_resampled['QQQ_Fri'] / weekly_resampled['MA_Fri']
     
+    # 일간으로 확장
     daily_expanded = weekly_resampled.resample('D').ffill()
     daily_shifted = daily_expanded.shift(1)
     df_mapped = daily_shifted.reindex(df.index)
     
-    df['Basis_Disp']      = df_mapped['Disp_Fri'].fillna(1.0)
+    # [핵심] 사용자가 선택한 모드에 따라 'Basis_Disp(기준지표)' 갈아끼우기
+    mode = params.get('strategy_mode', '이격도') # 기본값 안전장치
+    
+    if "RSI" in mode:
+        # RSI 모드면 기준값에 RSI를 넣음 (fillna 50은 중간값)
+        df['Basis_Disp'] = df_mapped['RSI_Fri'].fillna(50.0)
+    else:
+        # 이격도 모드면 기준값에 이격도를 넣음 (fillna 1.0은 중간값)
+        df['Basis_Disp'] = df_mapped['Disp_Fri'].fillna(1.0)
+
+    # 나머지 로깅용 데이터
     df['Log_Ref_Date']    = daily_shifted['QQQ_Fri'].reindex(df.index).index 
     df['Log_QQQ_Fri']     = df_mapped['QQQ_Fri']
-    df['Log_MA_Fri']      = df_mapped['MA_Fri']
+    df['Log_MA_Fri']      = df_mapped['MA_Fri'] # 로그에는 MA 기록 유지
     df['Log_Start_Price'] = df_mapped['Start_Price_Fri']
     df['Prev_Close'] = df['SOXL'].shift(1)
     
