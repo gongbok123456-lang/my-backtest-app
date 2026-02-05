@@ -201,231 +201,57 @@ def excel_round_down(n, decimals=0):
     return math.floor(n * multiplier + 1e-9) / multiplier
 
 def calculate_loc_quantity(seed_amount, order_price, close_price, buy_range, max_add_orders):
-    """
-    LOC(Limit-On-Close) 수량 계산 함수 (분할매수 0회 에러 수정판)
-    """
-    # 0. 가격 및 자본 방어
-    if order_price <= 0: return 0
-    if seed_amount <= 0: return 0
-    
-    # 1. 목표가(Target) 기준 기본 수량
-    qty_at_order = seed_amount // order_price
-    
-    # 2. 바닥가(Bottom) 기준 최대 수량
-    # buy_range는 음수 (예: -0.15)
-    bottom_price = order_price * (1 + buy_range)
-    if bottom_price <= 0: bottom_price = 0.01 # 0원 이하 방지
-    
-    qty_at_bot = seed_amount // bottom_price
-    
-    # [수정 핵심] 분할매수 횟수가 0이면, 나누기 연산을 하지 않고 바로 리턴
-    if max_add_orders <= 0:
-        # 분할매수 없음 = 목표가 이하라면 그냥 기본 수량만 매수
-        if close_price <= order_price:
-            return int(qty_at_order)
-        else:
-            return 0 # 목표가보다 비싸면 안 삼
+    if seed_amount is None or order_price is None or order_price <= 0: return 0
+    if pd.isna(seed_amount) or pd.isna(order_price) or pd.isna(close_price): return 0
 
-    # 3. 구간별 추가 매수 로직 (LOC)
-    # 종가가 목표가보다 비쌈 -> 매수 안 함
-    if close_price > order_price:
-        return 0
-        
-    # 종가가 바닥가보다 쌈 -> 최대 수량 풀매수
-    if close_price <= bottom_price:
-        return int(qty_at_bot)
-        
-    # 종가가 중간(Range)에 위치함 -> 위치에 비례해서 수량 늘림
-    # 기존 코드의 'fix_qty' 나누기 방식 대신, 비율 계산(Linear)을 사용하여 더 안전함
-    total_diff_qty = qty_at_bot - qty_at_order    # 더 사야 할 총 수량
-    price_depth = order_price - bottom_price      # 총 가격 구간
-    current_depth = order_price - close_price     # 현재 가격이 얼마나 내려왔나
-    
-    # 비율대로 수량 추가
-    ratio = current_depth / price_depth
-    added_qty = total_diff_qty * ratio
-    
-    return int(qty_at_order + added_qty)
+    base_qty = int(seed_amount / order_price)
+    multiplier = (1 + buy_range) if buy_range <= 0 else (1 - buy_range)
+    bot_price = excel_round_down(order_price * multiplier, 2)
 
-def calculate_rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.where(delta > 0, 0)
-    loss = -delta.where(delta < 0, 0)
-    
-    avg_gain = gain.ewm(com=period-1, min_periods=period).mean()
-    avg_loss = loss.ewm(com=period-1, min_periods=period).mean()
-    
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+    fix_qty = 0
+    if bot_price > 0:
+        qty_at_bot = seed_amount / bot_price
+        qty_at_order = seed_amount / order_price
+        fix_qty = int((qty_at_bot - qty_at_order) / max_add_orders)
+    if fix_qty < 0: fix_qty = 0
 
-def render_strategy_inputs(suffix, key_prefix):
-    st.subheader(f"📊 {key_prefix} 기본 설정")
-    
-    # 1. 전략 모드 선택
-    k_mode = f"mode_{suffix}"
-    if k_mode not in st.session_state:
-        st.session_state[k_mode] = "이격도 (MA Basis)"
-        
-    strategy_mode = st.radio(
-        "기준 지표 선택", 
-        ["이격도 (MA Basis)", "RSI (Relative Strength)"], 
-        key=k_mode,
-        horizontal=True
-    )
+    final_qty = 0
+    if base_qty > 0:
+        implied_price = seed_amount / base_qty
+        if implied_price >= close_price and implied_price >= bot_price:
+            final_qty += base_qty
 
-    # 2. 초기 자본
-    k_bal = f"bal_{suffix}"
-    balance = st.number_input("초기 자본 ($)", value=10000.0, step=1000.0, format="%.1f", key=k_bal)
-    
-    today = datetime.date.today()
-    k_sd = f"sd_{suffix}"; k_ed = f"ed_{suffix}"
-    c_d1, c_d2 = st.columns(2)
-    start_date = c_d1.date_input("시작일", value=datetime.date(2022, 1, 1), key=k_sd)
-    end_date = c_d2.date_input("종료일", value=today, key=k_ed)
-    
-    k_ma = f"ma_{suffix}"
-    ma_window = st.number_input("이평선 기간 (일)", value=120, step=10, key=k_ma)
+    for i in range(1, max_add_orders + 1):
+        step_qty = fix_qty
+        current_cum_qty = base_qty + (i * step_qty)
+        if current_cum_qty <= 0: continue
+        implied_price = seed_amount / current_cum_qty
+        if implied_price >= close_price and implied_price >= bot_price:
+            final_qty += step_qty
 
-    st.markdown("---")
-    st.markdown(f"**🎯 {strategy_mode} 상세 파라미터**")
-    
-    # 모드에 따른 추천값 설정
-    if "RSI" in strategy_mode:
-        st.caption("💡 RSI 추천값: 바닥(30~35), 천장(70~75)")
-        default_bt = 30.0 
-        default_cl = 70.0 
-    else:
-        st.caption("💡 이격도 추천값: 바닥(0.9~0.95), 천장(1.05~1.1)")
-        default_bt = 0.90 
-        default_cl = 1.10 
+    return final_qty
 
-    # 3. 바닥/천장 설정
-    st.markdown("##### 📉 바닥 (Bottom)")
-    c1, c2 = st.columns(2)
-    k_bc=f"bc_{suffix}"; k_bb=f"bb_{suffix}"
-    
-    bt_cond = c1.number_input("기준 값 (이격/RSI)", 0.0, 200.0, value=default_bt, step=0.01, format="%.2f", key=k_bc)
-    bt_buy = c2.number_input("매수점%", -30.0, 30.0, value=15.0, step=0.1, key=k_bb)
-    
-    k_bp=f"bp_{suffix}"; k_bt=f"bt_{suffix}"
-    c3, c4 = st.columns(2)
-    bt_prof = c3.number_input("익절%", 0.0, 100.0, value=10.0, step=0.5, key=k_bp)
-    bt_time = c4.number_input("보유일(TimeCut)", 0, 365, value=20, step=1, key=k_bt)
-    
-    k_add_cnt = f"add_cnt_{suffix}"
-    bt_add_cnt = st.number_input("분할매수 횟수 (0=미사용)", 0, 10, value=0, step=1, key=k_add_cnt)
-
-    st.markdown("##### 📈 천장 (Ceiling)")
-    c5, c6 = st.columns(2)
-    k_cc=f"cc_{suffix}"; k_cb=f"cb_{suffix}"
-    
-    cl_cond = c5.number_input("기준 값 (이격/RSI)", 0.0, 200.0, value=default_cl, step=0.01, format="%.2f", key=k_cc)
-    cl_buy = c6.number_input("매수점%", -30.0, 30.0, value=-5.0, step=0.1, key=k_cb)
-    
-    k_cp=f"cp_{suffix}"; k_ct=f"ct_{suffix}"
-    c7, c8 = st.columns(2)
-    cl_prof = c7.number_input("익절%", 0.0, 100.0, value=3.0, step=0.5, key=k_cp)
-    cl_time = c8.number_input("보유일(TimeCut)", 0, 365, value=3, step=1, key=k_ct)
-
-    # 4. 티어 비중 설정 (기존 유지)
-    st.markdown("---")
-    st.write("⚖️ **티어별 비중**")
-    base_key = f"base_w_{suffix}"
-    if base_key in st.session_state:
-        initial_data = st.session_state[base_key]
-    else:
-        default_data = {
-            'Tier': [f'Tier {i}' for i in range(1, 11)],
-            'Bottom': [10.0] * 10, 'Middle': [10.0] * 10, 'Ceiling': [10.0] * 10
-        }
-        initial_data = pd.DataFrame(default_data).set_index('Tier')
-        st.session_state[base_key] = initial_data
-
-    current_ver = st.session_state.editor_ver
-    unique_key = f"w_{suffix}_v{current_ver}"
-    edited_w = st.data_editor(
-        initial_data, 
-        key=unique_key, 
-        column_config={
-            "Bottom": st.column_config.NumberColumn("바닥%", format="%.1f%%"),
-            "Middle": st.column_config.NumberColumn("중간%", format="%.1f%%"),
-            "Ceiling": st.column_config.NumberColumn("천장%", format="%.1f%%"),
-        }, use_container_width=True
-    )
-    st.session_state[f"current_w_{suffix}"] = edited_w
-
-    # [중요 수정] 백테스트 엔진이 요구하는 키 이름으로 정확히 매핑하여 반환
-    return {
-        'strategy_mode': strategy_mode,
-        'start_date': start_date, 'end_date': end_date,
-        'initial_balance': balance, 'ma_window': ma_window,
-        
-        # 바닥 (Bottom)
-        'bt_cond': bt_cond, 
-        'bt_buy': bt_buy,   # _thr 제거, % 값 그대로 전달
-        'bt_prof': bt_prof, # _thr 제거
-        'bt_time': bt_time,
-        'add_order_cnt': bt_add_cnt, # bt_ 접두어 뗀 키 추가
-        'bt_add_order_cnt': bt_add_cnt,
-        
-        # 천장 (Ceiling)
-        'cl_cond': cl_cond, 
-        'cl_buy': cl_buy, 
-        'cl_prof': cl_prof, 
-        'cl_time': cl_time,
-        
-        # 중간 (Middle) - UI에는 없지만 에러 방지용 기본값
-        'md_buy': 0.0, 'md_prof': 0.0, 'md_time': 999,
-        
-        # 기타 필수 설정
-        'loc_range': bt_buy, # loc 범위는 매수점과 동일하게 설정
-        'fee_rate': 0.0007,  # 기본 수수료
-        'profit_rate': 0.0,  # 복리/단리 설정용 (기본 0)
-        'loss_rate': 0.0,
-        'tier_weights': edited_w
-    }
-	
 # --- [백테스트 엔진] ---
 def backtest_engine_web(df, params):
     df = df.copy()
     
     df['QQQ'] = pd.to_numeric(df['QQQ'], errors='coerce')
-    
-    # 1. 이평선 계산 (기존 로직)
     ma_win = int(params['ma_window'])
     df['MA_Daily'] = df['QQQ'].rolling(window=ma_win, min_periods=1).mean()
     df['Log_Start_Price'] = df['QQQ'].shift(ma_win - 1)
-    
-    # 2. RSI 계산 (추가된 로직)
-    df['RSI_Daily'] = calculate_rsi(df['QQQ'], period=14)
 
-    # 주간 데이터로 리샘플링 (두 지표 모두 금요일 기준값 추출)
-    weekly_resampled = df[['QQQ', 'MA_Daily', 'RSI_Daily', 'Log_Start_Price']].resample('W-FRI').last()
-    weekly_resampled.columns = ['QQQ_Fri', 'MA_Fri', 'RSI_Fri', 'Start_Price_Fri']
-    
-    # 이격도 계산
+    weekly_resampled = df[['QQQ', 'MA_Daily', 'Log_Start_Price']].resample('W-FRI').last()
+    weekly_resampled.columns = ['QQQ_Fri', 'MA_Fri', 'Start_Price_Fri']
     weekly_resampled['Disp_Fri'] = weekly_resampled['QQQ_Fri'] / weekly_resampled['MA_Fri']
     
-    # 일간으로 확장
     daily_expanded = weekly_resampled.resample('D').ffill()
     daily_shifted = daily_expanded.shift(1)
     df_mapped = daily_shifted.reindex(df.index)
     
-    # [핵심] 사용자가 선택한 모드에 따라 'Basis_Disp(기준지표)' 갈아끼우기
-    mode = params.get('strategy_mode', '이격도') # 기본값 안전장치
-    
-    if "RSI" in mode:
-        # RSI 모드면 기준값에 RSI를 넣음 (fillna 50은 중간값)
-        df['Basis_Disp'] = df_mapped['RSI_Fri'].fillna(50.0)
-    else:
-        # 이격도 모드면 기준값에 이격도를 넣음 (fillna 1.0은 중간값)
-        df['Basis_Disp'] = df_mapped['Disp_Fri'].fillna(1.0)
-
-    # 나머지 로깅용 데이터
+    df['Basis_Disp']      = df_mapped['Disp_Fri'].fillna(1.0)
     df['Log_Ref_Date']    = daily_shifted['QQQ_Fri'].reindex(df.index).index 
     df['Log_QQQ_Fri']     = df_mapped['QQQ_Fri']
-    df['Log_MA_Fri']      = df_mapped['MA_Fri'] # 로그에는 MA 기록 유지
+    df['Log_MA_Fri']      = df_mapped['MA_Fri']
     df['Log_Start_Price'] = df_mapped['Start_Price_Fri']
     df['Prev_Close'] = df['SOXL'].shift(1)
     
@@ -616,7 +442,102 @@ with st.sidebar:
     
     tab_s, tab_a = st.tabs(["🛡️ 안정형", "🔥 공격형"])
 
-    # [수정된 부분] 함수 정의를 위로 뺐으므로 여기서는 호출만 합니다!
+    def render_strategy_inputs(suffix, key_prefix):
+        st.subheader(f"📊 {key_prefix} 기본 설정")
+        
+        # [핵심 수정] value를 st.session_state에서 가져오도록 변경 (충돌 방지)
+        k_bal = f"bal_{suffix}"
+        balance = st.number_input(f"초기 자본 ($)", value=st.session_state.get(k_bal, 10000), key=k_bal)
+        
+        today = datetime.date.today()
+        c_d1, c_d2 = st.columns(2)
+        k_sd = f"sd_{suffix}"; k_ed = f"ed_{suffix}"
+        start_date = c_d1.date_input("시작일", value=st.session_state.get(k_sd, datetime.date(2010, 1, 1)), max_value=today, key=k_sd)
+        end_date = c_d2.date_input("종료일", value=st.session_state.get(k_ed, today), max_value=today, key=k_ed)
+        
+        st.markdown("---")
+        st.write("⚙️ **파라미터 설정**")
+        
+        k_fee = f"fee_{suffix}"
+        fee = st.number_input("수수료 (%)", value=st.session_state.get(k_fee, 0.07), step=0.01, format="%.2f", key=k_fee)
+        
+        k_pr = f"pr_{suffix}"; k_lr = f"lr_{suffix}"
+        profit_rate = st.slider("이익 복리율 (%)", 0, 100, st.session_state.get(k_pr, 70), key=k_pr)
+        loss_rate = st.slider("손실 복리율 (%)", 0, 100, st.session_state.get(k_lr, 50), key=k_lr)
+        
+        c_loc1, c_loc2 = st.columns(2)
+        k_add = f"add_{suffix}"; k_rng = f"rng_{suffix}"
+        add_order_cnt = c_loc1.number_input("분할 횟수", value=st.session_state.get(k_add, 4), min_value=1, key=k_add) 
+        loc_range = c_loc2.number_input("LOC 범위 (-%)", value=st.session_state.get(k_rng, 20.0), min_value=0.0, key=k_rng)
+        
+        k_ma = f"ma_{suffix}"
+        ma_win = st.number_input("이평선 (MA)", 50, 300, st.session_state.get(k_ma, 200), key=k_ma)
+
+        st.markdown("##### 📉 바닥 (Bottom)")
+        c1, c2 = st.columns(2)
+        k_bc=f"bc_{suffix}"; k_bb=f"bb_{suffix}"; k_bp=f"bp_{suffix}"; k_bt=f"bt_{suffix}"
+        bt_cond = c1.number_input("기준 이격", 0.8, 1.0, st.session_state.get(k_bc, 0.90), step=0.01, key=k_bc)
+        bt_buy = c2.number_input("매수점%", -30.0, 30.0, st.session_state.get(k_bb, 15.0), step=0.1, key=k_bb)
+        bt_prof = c1.number_input("익절%", 0.0, 100.0, st.session_state.get(k_bp, 2.5), step=0.1, key=k_bp)
+        bt_time = c2.number_input("존버일", 1, 100, st.session_state.get(k_bt, 10), key=k_bt)
+
+        st.markdown("##### ➖ 중간 (Middle)")
+        c3, c4 = st.columns(2)
+        k_mb=f"mb_{suffix}"; k_mp=f"mp_{suffix}"; k_mt=f"mt_{suffix}"
+        md_buy = c3.number_input("매수점%", -30.0, 30.0, st.session_state.get(k_mb, -0.01), step=0.1, key=k_mb)
+        md_prof = c4.number_input("익절%", 0.0, 100.0, st.session_state.get(k_mp, 2.8), step=0.1, key=k_mp)
+        md_time = c3.number_input("존버일", 1, 100, st.session_state.get(k_mt, 15), key=k_mt)
+
+        st.markdown("##### 📈 천장 (Ceiling)")
+        c5, c6 = st.columns(2)
+        k_cc=f"cc_{suffix}"; k_cb=f"cb_{suffix}"; k_cp=f"cp_{suffix}"; k_ct=f"ct_{suffix}"
+        cl_cond = c5.number_input("기준 이격", 1.0, 1.5, st.session_state.get(k_cc, 1.10), step=0.01, key=k_cc)
+        cl_buy = c6.number_input("매수점%", -30.0, 30.0, st.session_state.get(k_cb, -0.1), step=0.1, key=k_cb)
+        cl_prof = c5.number_input("익절%", 0.0, 100.0, st.session_state.get(k_cp, 1.5), step=0.1, key=k_cp)
+        cl_time = c6.number_input("존버일", 1, 100, st.session_state.get(k_ct, 40), key=k_ct)
+        
+        st.markdown("---")
+        st.write("⚖️ **티어별 비중**")
+        
+        base_key = f"base_w_{suffix}"
+        if base_key in st.session_state:
+            initial_data = st.session_state[base_key]
+        else:
+            default_data = {
+                'Tier': [f'Tier {i}' for i in range(1, 11)],
+                'Bottom': [10.0] * 10, 'Middle': [10.0] * 10, 'Ceiling': [10.0] * 10
+            }
+            initial_data = pd.DataFrame(default_data).set_index('Tier')
+            st.session_state[base_key] = initial_data
+
+        current_ver = st.session_state.editor_ver
+        unique_key = f"w_{suffix}_v{current_ver}"
+        
+        edited_w = st.data_editor(
+            initial_data, 
+            key=unique_key, 
+            column_config={
+                "Bottom": st.column_config.NumberColumn("바닥%", format="%.1f%%"),
+                "Middle": st.column_config.NumberColumn("중간%", format="%.1f%%"),
+                "Ceiling": st.column_config.NumberColumn("천장%", format="%.1f%%"),
+            }, use_container_width=True
+        )
+        st.session_state[f"current_w_{suffix}"] = edited_w
+
+        return {
+            'start_date': start_date, 'end_date': end_date,
+            'initial_balance': balance,
+            'fee_rate': fee/100,
+            'profit_rate': profit_rate/100.0, 'loss_rate': loss_rate/100.0,
+            'loc_range': loc_range, 'add_order_cnt': add_order_cnt,
+            'force_round': True, 'ma_window': ma_win, 
+            'bt_cond': bt_cond, 'bt_buy': bt_buy, 'bt_prof': bt_prof/100, 'bt_time': bt_time,
+            'md_buy': md_buy, 'md_prof': md_prof/100, 'md_time': md_time,
+            'cl_cond': cl_cond, 'cl_buy': cl_buy, 'cl_prof': cl_prof/100, 'cl_time': cl_time,
+            'tier_weights': edited_w,
+            'label': key_prefix
+        }
+
     with tab_s:
         params_s = render_strategy_inputs('s', '🛡️ 안정형')
 
@@ -827,8 +748,3 @@ if sheet_url:
 
 else:
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
-
-
-
-
-
