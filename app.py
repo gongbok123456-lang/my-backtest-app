@@ -19,7 +19,7 @@ st.set_page_config(page_title="쪼꼬야옹 백테스트 연구소", page_icon="
 
 # --- [세션 상태 초기화] ---
 if 'opt_results' not in st.session_state: 
-    st.session_state.opt_results = pd.DataFrame() # [수정] 리스트 대신 DataFrame으로 초기화
+    st.session_state.opt_results = pd.DataFrame()
 if 'trial_count' not in st.session_state: st.session_state.trial_count = 0
 if 'last_backtest_result' not in st.session_state: st.session_state.last_backtest_result = None
 if 'editor_ver' not in st.session_state: st.session_state.editor_ver = 0
@@ -645,6 +645,11 @@ if sheet_url:
                     l_start = st.date_input("시작일", value=datetime.date(2010,1,1))
                     l_end = st.date_input("종료일", value=today) # 기본값 오늘
                     
+                    # [추가] 실험용 비중 설정 (기본값 제공)
+                    st.markdown("#### ⚖️ 티어별 비중 (실험용)")
+                    lab_default_w = pd.DataFrame({'Tier': [f'Tier {i}' for i in range(1, 11)], 'Bottom': [10.0]*10, 'Middle': [10.0]*10, 'Ceiling': [10.0]*10}).set_index('Tier')
+                    lab_weights = st.data_editor(lab_default_w, key="lab_w_editor", use_container_width=True)
+
                     lab_run = st.form_submit_button("🚀 백테스트 실행", type="primary")
 
             with c_lab_out:
@@ -656,7 +661,8 @@ if sheet_url:
                         'add_order_cnt': l_add, 'loc_range': l_rng,
                         'bt_cond': l_bc, 'bt_buy': l_bb, 'bt_prof': l_bp/100, 'bt_time': l_bt,
                         'md_buy': l_mb, 'md_prof': l_mp/100, 'md_time': l_mt,
-                        'cl_cond': l_cc, 'cl_buy': l_cb, 'cl_prof': l_cp/100, 'cl_time': l_ct
+                        'cl_cond': l_cc, 'cl_buy': l_cb, 'cl_prof': l_cp/100, 'cl_time': l_ct,
+                        'tier_weights': lab_weights # [핵심] 실험용 비중 덮어쓰기
                     })
                     
                     res_lab = backtest_engine_web(df, lab_params)
