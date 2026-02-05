@@ -611,46 +611,57 @@ if sheet_url:
         # --- [탭 2: 백테스트 연구소] ---
         with tab_lab:
             st.info("🧪 여기서는 사이드바 설정과 무관하게 자유롭게 파라미터를 변경하여 테스트할 수 있습니다.")
-            c_lab_in, c_lab_out = st.columns([1, 2])
+            c_lab_in, c_lab_out = st.columns([1.2, 2.8]) # [변경] 입력칸 비율 축소 (가독성 향상)
             
             with c_lab_in:
                 st.subheader("🛠️ 실험 조건")
                 with st.form("lab_form"):
-                    lab_st_type = st.radio("기준 지표", ["MA 이격도", "RSI"], horizontal=True)
+                    # 1. 최상단: 날짜 및 전략 타입 (2열)
+                    c_l1, c_l2 = st.columns(2)
+                    lab_st_type = c_l1.radio("기준", ["MA 이격도", "RSI"])
+                    l_ma = c_l2.number_input("이평선", value=200)
                     
-                    st.markdown("#### ⚙️ 기본")
-                    l_ma = st.number_input("이평선 (MA)", value=200)
-                    l_add = st.number_input("분할 횟수", value=4)
-                    l_rng = st.number_input("LOC 범위 (-%)", value=20.0)
-                    
-                    st.markdown("#### 📉 바닥 (Bottom)")
-                    l_bc = st.number_input("기준", value=30.0 if lab_st_type=='RSI' else 0.90)
-                    l_bb = st.number_input("매수%", value=15.0)
-                    l_bp = st.number_input("익절%", value=5.0)
-                    l_bt = st.number_input("존버일", value=10)
-
-                    st.markdown("#### ➖ 중간 (Middle)")
-                    l_mb = st.number_input("매수%", value=-0.01)
-                    l_mp = st.number_input("익절%", value=2.8)
-                    l_mt = st.number_input("존버일", value=15)
-
-                    st.markdown("#### 📈 천장 (Ceiling)")
-                    l_cc = st.number_input("기준", value=70.0 if lab_st_type=='RSI' else 1.10)
-                    l_cb = st.number_input("매수%", value=-0.1)
-                    l_cp = st.number_input("익절%", value=1.5)
-                    l_ct = st.number_input("존버일", value=40)
-                    
-                    st.markdown("#### 📅 기간")
                     today = datetime.date.today()
-                    l_start = st.date_input("시작일", value=datetime.date(2010,1,1))
-                    l_end = st.date_input("종료일", value=today) # 기본값 오늘
+                    l_start = c_l1.date_input("시작", value=datetime.date(2010,1,1))
+                    l_end = c_l2.date_input("종료", value=today)
                     
-                    # [추가] 실험용 비중 설정 (기본값 제공)
-                    st.markdown("#### ⚖️ 티어별 비중 (실험용)")
-                    lab_default_w = pd.DataFrame({'Tier': [f'Tier {i}' for i in range(1, 11)], 'Bottom': [10.0]*10, 'Middle': [10.0]*10, 'Ceiling': [10.0]*10}).set_index('Tier')
-                    lab_weights = st.data_editor(lab_default_w, key="lab_w_editor", use_container_width=True)
+                    # 2. 중간: 기본 설정 (3열)
+                    c_b1, c_b2, c_b3 = st.columns(3)
+                    l_add = c_b1.number_input("분할", value=4)
+                    l_rng = c_b2.number_input("범위(-%)", value=20.0)
+                    
+                    st.divider()
+                    
+                    # 3. 핵심: 탭을 사용하여 공간 절약 (Bottom / Middle / Ceiling)
+                    t_bot, t_mid, t_ceil = st.tabs(["📉 바닥", "➖ 중간", "📈 천장"])
+                    
+                    with t_bot:
+                        l_bc = st.number_input("진입 기준 (이하)", value=30.0 if lab_st_type=='RSI' else 0.90)
+                        c_bt1, c_bt2 = st.columns(2)
+                        l_bb = c_bt1.number_input("매수(%)", value=15.0)
+                        l_bp = c_bt2.number_input("익절(%)", value=5.0)
+                        l_bt = st.number_input("존버일", value=10)
+                        
+                    with t_mid:
+                        c_md1, c_md2 = st.columns(2)
+                        l_mb = c_md1.number_input("중간 매수(%)", value=-0.01)
+                        l_mp = c_md2.number_input("중간 익절(%)", value=2.8)
+                        l_mt = st.number_input("중간 존버일", value=15)
+                        
+                    with t_ceil:
+                        l_cc = st.number_input("진입 기준 (이상)", value=70.0 if lab_st_type=='RSI' else 1.10)
+                        c_cl1, c_cl2 = st.columns(2)
+                        l_cb = c_cl1.number_input("천장 매수(%)", value=-0.1)
+                        l_cp = c_cl2.number_input("천장 익절(%)", value=1.5)
+                        l_ct = st.number_input("천장 존버일", value=40)
 
-                    lab_run = st.form_submit_button("🚀 백테스트 실행", type="primary")
+                    # 4. 하단: 비중 설정 (Expander로 숨김)
+                    with st.expander("⚖️ 티어별 비중 설정"):
+                        lab_default_w = pd.DataFrame({'Tier': [f'Tier {i}' for i in range(1, 11)], 'Bottom': [10.0]*10, 'Middle': [10.0]*10, 'Ceiling': [10.0]*10}).set_index('Tier')
+                        lab_weights = st.data_editor(lab_default_w, key="lab_w_editor", use_container_width=True)
+
+                    # 5. 실행 버튼 (이제 위쪽에 보임)
+                    lab_run = st.form_submit_button("🚀 백테스트 실행", type="primary", use_container_width=True)
 
             with c_lab_out:
                 if lab_run:
@@ -662,19 +673,27 @@ if sheet_url:
                         'bt_cond': l_bc, 'bt_buy': l_bb, 'bt_prof': l_bp/100, 'bt_time': l_bt,
                         'md_buy': l_mb, 'md_prof': l_mp/100, 'md_time': l_mt,
                         'cl_cond': l_cc, 'cl_buy': l_cb, 'cl_prof': l_cp/100, 'cl_time': l_ct,
-                        'tier_weights': lab_weights # [핵심] 실험용 비중 덮어쓰기
+                        'tier_weights': lab_weights
                     })
                     
                     res_lab = backtest_engine_web(df, lab_params)
                     if res_lab:
-                        st.subheader("📊 실험 결과")
-                        m1, m2, m3, m4 = st.columns(4)
-                        m1.metric("최종 자산", f"${res_lab['Final']:,.0f}")
-                        m2.metric("수익률", f"{res_lab['Return']:.2f}%")
-                        m3.metric("CAGR", f"{res_lab['CAGR']:.2f}%")
-                        m4.metric("MDD", f"{res_lab['MDD']:.2f}%")
-                        st.line_chart(res_lab['Series'])
-                        st.dataframe(res_lab['TradeLog'], use_container_width=True)
+                        # 결과 요약 (Card View)
+                        with st.container(border=True):
+                            m1, m2, m3, m4, m5 = st.columns(5)
+                            m1.metric("최종 자산", f"${res_lab['Final']:,.0f}")
+                            m2.metric("수익률", f"{res_lab['Return']:.2f}%")
+                            m3.metric("CAGR", f"{res_lab['CAGR']:.2f}%")
+                            m4.metric("MDD", f"{res_lab['MDD']:.2f}%")
+                            m5.metric("승률", f"{res_lab['WinRate']}%")
+                        
+                        # 차트
+                        st.subheader("📈 자산 추이")
+                        st.line_chart(res_lab['Series'], color="#00FF00")
+                        
+                        # 로그
+                        st.subheader("📜 매매 기록")
+                        st.dataframe(res_lab['TradeLog'], use_container_width=True, height=400)
 
         # --- [탭 3: 몬테카를로 최적화] ---
         with tab_mc:
