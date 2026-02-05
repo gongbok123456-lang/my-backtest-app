@@ -473,12 +473,12 @@ with st.sidebar:
     
     tab_s, tab_a = st.tabs(["🛡️ 안정형", "🔥 공격형"])
 
-	    def render_strategy_inputs(suffix, key_prefix):
+		    def render_strategy_inputs(suffix, key_prefix):
 	    st.subheader(f"📊 {key_prefix} 기본 설정")
 	    
-	    # 1. 전략 모드 선택 (여기는 충돌 없음)
+	    # 1. 전략 모드 선택
 	    k_mode = f"mode_{suffix}"
-	    # 세션에 값이 없으면 기본값 설정
+	    # 세션에 값이 없으면 기본값 설정 (충돌 방지용)
 	    if k_mode not in st.session_state:
 	        st.session_state[k_mode] = "이격도 (MA Basis)"
 	        
@@ -489,8 +489,7 @@ with st.sidebar:
 	        horizontal=True
 	    )
 	
-	    # 2. 초기 자본 (오류 발생 지점 수정)
-	    # value=st.session_state.get(...) 형태를 -> value=10000.0 으로 단순화
+	    # 2. 초기 자본
 	    k_bal = f"bal_{suffix}"
 	    balance = st.number_input("초기 자본 ($)", value=10000.0, step=1000.0, format="%.1f", key=k_bal)
 	    
@@ -505,26 +504,22 @@ with st.sidebar:
 	    st.markdown("---")
 	    st.markdown(f"**🎯 {strategy_mode} 상세 파라미터**")
 	    
-	    # 모드에 따라 추천 기본값 텍스트 보여주기 (팁)
+	    # 모드에 따라 추천 기본값 텍스트 보여주기 & 기본값 변수 설정
 	    if "RSI" in strategy_mode:
 	        st.caption("💡 RSI 추천값: 바닥(30~35), 천장(70~75)")
-	        default_bt = 30.0 # RSI 기본값
-	        default_cl = 70.0
+	        default_bt = 30.0 # RSI 바닥 기준
+	        default_cl = 70.0 # RSI 천장 기준
 	    else:
 	        st.caption("💡 이격도 추천값: 바닥(0.9~0.95), 천장(1.05~1.1)")
-	        default_bt = 0.90 # 이격도 기본값
-	        default_cl = 1.10
+	        default_bt = 0.90 # 이격도 바닥 기준
+	        default_cl = 1.10 # 이격도 천장 기준
 	
-	    # 3. 바닥/천장 설정 (범위 0~200으로 확장 및 오류 수정)
+	    # 3. 바닥/천장 설정 (value에 session_state.get 제거하여 충돌 해결)
 	    st.markdown("##### 📉 바닥 (Bottom)")
 	    c1, c2 = st.columns(2)
 	    k_bc=f"bc_{suffix}"; k_bb=f"bb_{suffix}"
 	    
-	    # 여기서도 value에는 변수나 고정값만 넣고, st.session_state.get은 뺍니다.
-	    # 단, 모드 전환 시 기본값을 유동적으로 바꾸고 싶다면 아래처럼 'key가 없을 때만' 값을 넣는 로직을 쓸 수도 있지만,
-	    # 가장 안전한 방법은 그냥 고정된 값을 넣거나, 스트림릿이 기억하게 두는 것입니다.
-	    # 여기서는 충돌 방지를 위해 가장 단순한 고정값을 넣겠습니다. (사용자가 바꾸면 그게 유지됨)
-	    
+	    # 여기서 value=default_bt 로 설정하여 모드에 맞는 기본값이 들어가게 함
 	    bt_cond = c1.number_input("기준 값 (이격/RSI)", 0.0, 200.0, value=default_bt, step=0.01, format="%.2f", key=k_bc)
 	    bt_buy = c2.number_input("매수점%", -30.0, 30.0, value=15.0, step=0.1, key=k_bb)
 	    
@@ -550,7 +545,7 @@ with st.sidebar:
 	    cl_time = c8.number_input("보유일(TimeCut)", 0, 365, value=3, step=1, key=k_ct)
 	
 	    return {
-	        'strategy_mode': strategy_mode, # 모드 리턴
+	        'strategy_mode': strategy_mode,
 	        'start_date': start_date, 'end_date': end_date,
 	        'initial_balance': balance, 'ma_window': ma_window,
 	        'bt_cond': bt_cond, 'bt_buy_thr': bt_buy/100, 
@@ -770,5 +765,6 @@ if sheet_url:
 
 else:
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
 
 
