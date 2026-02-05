@@ -231,6 +231,18 @@ def calculate_loc_quantity(seed_amount, order_price, close_price, buy_range, max
 
     return final_qty
 
+def calculate_rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    
+    avg_gain = gain.ewm(com=period-1, min_periods=period).mean()
+    avg_loss = loss.ewm(com=period-1, min_periods=period).mean()
+    
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+	
 # --- [백테스트 엔진] ---
 def backtest_engine_web(df, params):
     df = df.copy()
@@ -445,6 +457,16 @@ with st.sidebar:
     def render_strategy_inputs(suffix, key_prefix):
         st.subheader(f"📊 {key_prefix} 기본 설정")
         
+        # [추가됨] 전략 모드 선택 스위치
+        k_mode = f"mode_{suffix}"
+        # 기본값은 'Disparity(이격도)'로 설정
+        strategy_mode = st.radio(
+            "기준 지표 선택", 
+            ["이격도 (MA Basis)", "RSI (Relative Strength)"], 
+            key=k_mode,
+            horizontal=True
+        )
+        
         # [핵심 수정] value를 st.session_state에서 가져오도록 변경 (충돌 방지)
         k_bal = f"bal_{suffix}"
         balance = st.number_input(f"초기 자본 ($)", value=st.session_state.get(k_bal, 10000), key=k_bal)
@@ -476,7 +498,7 @@ with st.sidebar:
         st.markdown("##### 📉 바닥 (Bottom)")
         c1, c2 = st.columns(2)
         k_bc=f"bc_{suffix}"; k_bb=f"bb_{suffix}"; k_bp=f"bp_{suffix}"; k_bt=f"bt_{suffix}"
-        bt_cond = c1.number_input("기준 이격", 0.8, 1.0, st.session_state.get(k_bc, 0.90), step=0.01, key=k_bc)
+        bt_cond = c1.number_input("기준 값 (이격/RSI)", 0.0, 200.0, st.session_state.get(k_bc, 0.90), step=0.01, format="%.2f", key=k_bc)
         bt_buy = c2.number_input("매수점%", -30.0, 30.0, st.session_state.get(k_bb, 15.0), step=0.1, key=k_bb)
         bt_prof = c1.number_input("익절%", 0.0, 100.0, st.session_state.get(k_bp, 2.5), step=0.1, key=k_bp)
         bt_time = c2.number_input("존버일", 1, 100, st.session_state.get(k_bt, 10), key=k_bt)
@@ -491,7 +513,7 @@ with st.sidebar:
         st.markdown("##### 📈 천장 (Ceiling)")
         c5, c6 = st.columns(2)
         k_cc=f"cc_{suffix}"; k_cb=f"cb_{suffix}"; k_cp=f"cp_{suffix}"; k_ct=f"ct_{suffix}"
-        cl_cond = c5.number_input("기준 이격", 1.0, 1.5, st.session_state.get(k_cc, 1.10), step=0.01, key=k_cc)
+        cl_cond = c5.number_input("기준 값 (이격/RSI)", 0.0, 200.0, st.session_state.get(k_cc, 1.10), step=0.01, format="%.2f", key=k_cc)
         cl_buy = c6.number_input("매수점%", -30.0, 30.0, st.session_state.get(k_cb, -0.1), step=0.1, key=k_cb)
         cl_prof = c5.number_input("익절%", 0.0, 100.0, st.session_state.get(k_cp, 1.5), step=0.1, key=k_cp)
         cl_time = c6.number_input("존버일", 1, 100, st.session_state.get(k_ct, 40), key=k_ct)
@@ -525,7 +547,8 @@ with st.sidebar:
         st.session_state[f"current_w_{suffix}"] = edited_w
 
         return {
-            'start_date': start_date, 'end_date': end_date,
+            'strategy_mode': strategy_mode,
+			'start_date': start_date, 'end_date': end_date,
             'initial_balance': balance,
             'fee_rate': fee/100,
             'profit_rate': profit_rate/100.0, 'loss_rate': loss_rate/100.0,
@@ -748,3 +771,4 @@ if sheet_url:
 
 else:
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
+
