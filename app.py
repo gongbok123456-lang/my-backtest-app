@@ -17,22 +17,11 @@ DEFAULT_ORDER_URL = "https://docs.google.com/spreadsheets/d/1PpgexM79XVvr23sVfi_
 # --- [페이지 설정] ---
 st.set_page_config(page_title="쪼꼬야옹 백테스트 연구소", page_icon="📈", layout="wide")
 
-# --- [세션 상태 초기화 및 데이터 무결성 검사] ---
-required_columns = ['Type', 'Bot_Ref', 'Ceil_Ref', 'B_Buy', 'B_Time', 'Score'] # 필수 컬럼 예시
-
-if 'opt_results' not in st.session_state: 
+# --- [세션 상태 초기화] ---
+if 'opt_results' not in st.session_state: st.session_state.opt_results = pd.DataFrame()
+if isinstance(st.session_state.opt_results, list): st.session_state.opt_results = pd.DataFrame(st.session_state.opt_results)
+if not st.session_state.opt_results.empty and 'B_Time' not in st.session_state.opt_results.columns:
     st.session_state.opt_results = pd.DataFrame()
-
-# [안전장치 1] 리스트라면 데이터프레임으로 변환
-if isinstance(st.session_state.opt_results, list):
-    st.session_state.opt_results = pd.DataFrame(st.session_state.opt_results)
-
-# [안전장치 2] 데이터 구조가 바뀌었다면 초기화 (KeyError 방지)
-if not st.session_state.opt_results.empty:
-    # 현재 코드에서 사용하는 핵심 컬럼이 있는지 확인
-    if 'B_Time' not in st.session_state.opt_results.columns:
-        st.session_state.opt_results = pd.DataFrame()
-        st.toast("⚠️ 데이터 구조 변경으로 시뮬레이션 기록이 초기화되었습니다.")
 
 if 'trial_count' not in st.session_state: st.session_state.trial_count = 0
 if 'last_backtest_result' not in st.session_state: st.session_state.last_backtest_result = None
@@ -219,16 +208,31 @@ def backtest_engine_web(df, params):
     df = df.copy()
     df['QQQ'] = pd.to_numeric(df['QQQ'], errors='coerce')
     ma_win = int(params['ma_window'])
+    
+    # 1. 이동평균 및 이격도 계산
     df['MA_Daily'] = df['QQQ'].rolling(window=ma_win, min_periods=1).mean()
     df['Log_Start_Price'] = df['QQQ'].shift(ma_win - 1)
     
-    # RSI 계산
+    # 2. RSI 계산
     delta = df['SOXL'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
 
+    # 3. [NEW] RSI 다이버전스 감지 (상승 다이버전스: 주가 하락 + RSI 상승)
+    # 단순화: 최근 10일 최저가가 갱신되었으나, RSI는 이전 저점보다 높을 때
+    df['Low_10'] = df['SOXL'].rolling(window=10).min()
+    df['RSI_Low_10'] = df['RSI'].rolling(window=10).min()
+    # 어제보다 오늘이 더 낮은 신저가인데, RSI는 어제보다 높거나 30 이상 유지될 때 (간단 버전)
+    df['Bullish_Div'] = (df['SOXL'] == df['Low_10']) & (df['RSI'] > df['RSI'].shift(1)) & (df['RSI'] < 45)
+
+    # 4. [NEW] 볼린저 밴드 (20일, 2표준편차) - 익절 지연용
+    df['BB_MA20'] = df['SOXL'].rolling(window=20).mean()
+    df['BB_STD20'] = df['SOXL'].rolling(window=20).std()
+    df['BB_Upper'] = df['BB_MA20'] + (2 * df['BB_STD20'])
+
+    # 5. 주간 데이터 매핑 (기존 로직)
     weekly_resampled = df[['QQQ', 'MA_Daily', 'Log_Start_Price']].resample('W-FRI').last()
     weekly_resampled.columns = ['QQQ_Fri', 'MA_Fri', 'Start_Price_Fri']
     weekly_resampled['Disp_Fri'] = weekly_resampled['QQQ_Fri'] / weekly_resampled['MA_Fri']
@@ -239,9 +243,6 @@ def backtest_engine_web(df, params):
     
     df['Basis_Disp'] = df_mapped['Disp_Fri'].fillna(1.0)
     df['Log_Ref_Date'] = daily_shifted['QQQ_Fri'].reindex(df.index).index 
-    df['Log_QQQ_Fri'] = df_mapped['QQQ_Fri']
-    df['Log_MA_Fri'] = df_mapped['MA_Fri']
-    df['Log_Start_Price'] = df_mapped['Start_Price_Fri']
     df['Prev_Close'] = df['SOXL'].shift(1)
     
     start_dt = pd.to_datetime(params['start_date'])
@@ -275,13 +276,27 @@ def backtest_engine_web(df, params):
         strat_type = params.get('strategy_type', 'MA 이격도')
         current_disp = row['Basis_Disp'] if not pd.isna(row['Basis_Disp']) else 1.0
         current_rsi = row['RSI'] if not pd.isna(row['RSI']) else 50.0
-        
+        is_div = row['Bullish_Div']
+
+        # [전략 분기]
         if strat_type == 'RSI':
             if current_rsi < params['bt_cond']: phase = 'Bottom'
             elif current_rsi > params['cl_cond']: phase = 'Ceiling'
             else: phase = 'Middle'
             disp_val = current_rsi
-        else:
+        
+        elif strat_type == 'RSI 다이버전스':
+            # 다이버전스 발생 시 무조건 Bottom(바닥) 모드로 진입하여 과감하게 매수
+            if is_div: 
+                phase = 'Bottom'
+            # 다이버전스가 아니면 RSI 기준을 따름 (평소엔 Middle/Ceiling)
+            elif current_rsi > params['cl_cond']: 
+                phase = 'Ceiling'
+            else: 
+                phase = 'Middle'
+            disp_val = current_rsi
+            
+        else: # 기본값: MA 이격도
             if current_disp < params['bt_cond']: phase = 'Bottom'
             elif current_disp > params['cl_cond']: phase = 'Ceiling'
             else: phase = 'Middle'
@@ -298,7 +313,12 @@ def backtest_engine_web(df, params):
             target_p = excel_round_up(buy_p * (1 + s_conf['prof']), 2)
             is_sold = False; reason = ""
             if days >= s_conf['time']: is_sold = True; reason = f"TimeCut({days}d)"
-            elif today_close >= target_p: is_sold = True; reason = "Profit"
+            elif today_close >= target_p: 
+                # [NEW] 볼린저 밴드 워크 (익절 지연) 로직
+                if params.get('use_bb_walk', False) and today_close > row['BB_Upper']:
+                    is_sold = False # 아직 팔지 마! (밴드 상단 돌파 중)
+                else:
+                    is_sold = True; reason = "Profit"
             
             if is_sold:
                 holdings.remove(stock)
@@ -314,8 +334,7 @@ def backtest_engine_web(df, params):
                 if real_profit > 0: win_count += 1
                 trade_log.append({
                     'Date': dates[i], 'Type': 'Sell', 'Tier': tier, 'Phase': mode, 
-                    'Ref_Date': row['Log_Ref_Date'].strftime('%Y-%m-%d') if pd.notnull(row['Log_Ref_Date']) else '-',
-                    'Disp': disp_val, 'Price': today_close, 'Qty': qty, 
+                    'Ref_Date': '-', 'Disp': disp_val, 'Price': today_close, 'Qty': qty, 
                     'Profit': real_profit, 'Reason': reason
                 })
             else: stock[1] = days
@@ -324,6 +343,7 @@ def backtest_engine_web(df, params):
         if pd.isna(prev_c): prev_c = today_close
         target_p = excel_round_down(prev_c * (1 + conf['buy'] / 100), 2)
         
+        # 다이버전스 모드일 때는 목표가가 현재가보다 높아도(추격매수) 허용할 수 있음 (여기서는 기본 로직 유지)
         if today_close <= target_p and len(holdings) < MAX_SLOTS:
             curr_tiers = {h[4] for h in holdings}
             unavail = curr_tiers.union(tiers_sold)
@@ -353,9 +373,8 @@ def backtest_engine_web(df, params):
                         holdings.append([today_close, 0, real_qty, phase, new_tier, dates[i]])
                         trade_log.append({
                             'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase, 
-                            'Ref_Date': row['Log_Ref_Date'].strftime('%Y-%m-%d') if pd.notnull(row['Log_Ref_Date']) else '-',
-                            'Disp': disp_val, 'Price': today_close, 'Qty': real_qty, 
-                            'Profit': 0, 'Reason': 'LOC'
+                            'Ref_Date': '-', 'Disp': disp_val, 'Price': today_close, 'Qty': real_qty, 
+                            'Profit': 0, 'Reason': 'LOC' if strat_type != 'RSI 다이버전스' or not is_div else 'Divergence'
                         })
         
         if daily_net_profit_sum != 0:
@@ -392,7 +411,7 @@ def backtest_engine_web(df, params):
     }
 
 # --- [UI 구성] ---
-st.title("📊 쪼꼬야옹의 듀얼 전략 연구소")
+st.title("📊 쪼꼬야옹의 듀얼 전략 연구소 (v2.1 BB)")
 
 with st.sidebar:
     st.header("⚙️ 기본 데이터 연동")
@@ -419,7 +438,12 @@ with st.sidebar:
         st.markdown("---")
         st.write("⚙️ **전략 기준 선택**")
         k_type = f"st_type_{suffix}"
-        strategy_type = st.radio("매매 기준 지표", ["MA 이격도", "RSI"], index=0 if st.session_state.get(k_type, "MA 이격도") == "MA 이격도" else 1, horizontal=True, key=k_type)
+        # [NEW] RSI 다이버전스 추가
+        strategy_type = st.radio("매매 기준 지표", ["MA 이격도", "RSI", "RSI 다이버전스"], index=0, horizontal=True, key=k_type)
+
+        # [NEW] 볼린저 밴드 익절 지연 체크박스
+        k_bb_walk = f"bb_walk_{suffix}"
+        use_bb_walk = st.checkbox("🌭 볼린저 밴드 익절 지연 (Band Walk)", value=st.session_state.get(k_bb_walk, False), key=k_bb_walk, help="목표 수익률에 도달해도 주가가 볼린저 밴드 상단 위에 있으면 매도를 보류합니다.")
 
         st.markdown("---")
         st.write("⚙️ **파라미터 설정**")
@@ -436,7 +460,7 @@ with st.sidebar:
         k_ma = f"ma_{suffix}"
         ma_win = st.number_input("이평선 (MA)", 50, 300, st.session_state.get(k_ma, 200), key=k_ma)
 
-        if strategy_type == 'RSI':
+        if strategy_type.startswith('RSI'):
             lbl_bt = "RSI 기준 (이하)"; def_bt = 30.0; step_val = 1.0; lbl_cl = "RSI 기준 (이상)"; def_cl = 70.0
         else:
             lbl_bt = "이격도 기준 (이하)"; def_bt = 0.90; step_val = 0.01; lbl_cl = "이격도 기준 (이상)"; def_cl = 1.10
@@ -479,7 +503,8 @@ with st.sidebar:
         st.session_state[f"current_w_{suffix}"] = edited_w
 
         return {
-            'strategy_type': strategy_type, 'start_date': start_date, 'end_date': end_date,
+            'strategy_type': strategy_type, 'use_bb_walk': use_bb_walk,
+            'start_date': start_date, 'end_date': end_date,
             'initial_balance': balance, 'fee_rate': fee/100,
             'profit_rate': profit_rate/100.0, 'loss_rate': loss_rate/100.0,
             'loc_range': loc_range, 'add_order_cnt': add_order_cnt,
@@ -521,6 +546,8 @@ if sheet_url:
                     
                     if p_params['strategy_type'] == 'RSI':
                         curr_val = last_row['RSI']; val_fmt = f"{curr_val:.2f}"; label_metric = "현재 RSI"
+                    elif p_params['strategy_type'] == 'RSI 다이버전스':
+                        curr_val = last_row['RSI']; val_fmt = f"{curr_val:.2f}"; label_metric = "현재 RSI (Div 감지)"
                     else:
                         curr_val = last_row['Basis_Disp']; val_fmt = f"{curr_val:.4f}"; label_metric = "현재 이격도"
 
@@ -631,9 +658,12 @@ if sheet_url:
                 st.subheader("🛠️ 실험 조건")
                 with st.form("lab_form"):
                     c_l1, c_l2 = st.columns(2)
-                    lab_st_type = c_l1.radio("기준", ["MA 이격도", "RSI"])
+                    lab_st_type = c_l1.radio("기준", ["MA 이격도", "RSI", "RSI 다이버전스"])
                     l_ma = c_l2.number_input("이평선", value=200)
                     
+                    # [NEW] 볼린저 밴드 익절 지연 체크박스 (연구소용)
+                    lab_use_bb = st.checkbox("🌭 볼린저 밴드 익절 지연 (Band Walk)", value=False)
+
                     today = datetime.date.today()
                     l_start = c_l1.date_input("시작", value=datetime.date(2010,1,1))
                     l_end = c_l2.date_input("종료", value=today)
@@ -645,7 +675,7 @@ if sheet_url:
                     st.divider()
                     t_bot, t_mid, t_ceil = st.tabs(["📉 바닥", "➖ 중간", "📈 천장"])
                     with t_bot:
-                        l_bc = st.number_input("진입 기준 (이하)", value=30.0 if lab_st_type=='RSI' else 0.90)
+                        l_bc = st.number_input("진입 기준 (이하)", value=30.0 if lab_st_type.startswith('RSI') else 0.90)
                         c_bt1, c_bt2 = st.columns(2)
                         l_bb = c_bt1.number_input("매수(%)", value=15.0)
                         l_bp = c_bt2.number_input("익절(%)", value=5.0)
@@ -656,7 +686,7 @@ if sheet_url:
                         l_mp = c_md2.number_input("중간 익절(%)", value=2.8)
                         l_mt = st.number_input("중간 존버일", value=15)
                     with t_ceil:
-                        l_cc = st.number_input("진입 기준 (이상)", value=70.0 if lab_st_type=='RSI' else 1.10)
+                        l_cc = st.number_input("진입 기준 (이상)", value=70.0 if lab_st_type.startswith('RSI') else 1.10)
                         c_cl1, c_cl2 = st.columns(2)
                         l_cb = c_cl1.number_input("천장 매수(%)", value=-0.1)
                         l_cp = c_cl2.number_input("천장 익절(%)", value=1.5)
@@ -672,7 +702,7 @@ if sheet_url:
                 if lab_run:
                     lab_params = params_s.copy()
                     lab_params.update({
-                        'strategy_type': lab_st_type, 'ma_window': l_ma, 
+                        'strategy_type': lab_st_type, 'ma_window': l_ma, 'use_bb_walk': lab_use_bb,
                         'start_date': l_start, 'end_date': l_end,
                         'add_order_cnt': l_add, 'loc_range': l_rng,
                         'bt_cond': l_bc, 'bt_buy': l_bb, 'bt_prof': l_bp/100, 'bt_time': l_bt,
@@ -704,7 +734,9 @@ if sheet_url:
             with c_mc1:
                 with st.form("mc_form"):
                     mc_trials = st.number_input("1회 시도 횟수", 10, 500, 50)
-                    mc_type = st.radio("전략 타입", ["MA 이격도", "RSI"], horizontal=True)
+                    mc_type = st.radio("전략 타입", ["MA 이격도", "RSI", "RSI 다이버전스"], horizontal=True)
+                    # [NEW] 몬테카를로용 볼린저 밴드 체크
+                    mc_use_bb = st.checkbox("🌭 볼린저 밴드 익절 지연", value=False)
                     
                     st.markdown("#### 📅 시뮬레이션 기간 설정")
                     c_d1, c_d2 = st.columns(2)
@@ -716,7 +748,7 @@ if sheet_url:
                     # 1. 진입/탈출 기준
                     with st.expander("1. 진입/탈출 기준 (Threshold)", expanded=True):
                         c1, c2 = st.columns(2)
-                        if mc_type == 'RSI':
+                        if mc_type.startswith('RSI'):
                             r_bc_min = c1.number_input("바닥 기준(Min)", value=25.0); r_bc_max = c2.number_input("바닥 기준(Max)", value=35.0)
                             r_cc_min = c1.number_input("천장 기준(Min)", value=70.0); r_cc_max = c2.number_input("천장 기준(Max)", value=80.0)
                         else:
@@ -774,7 +806,7 @@ if sheet_url:
                         # 파라미터 적용 (날짜 적용 포함)
                         mc_params = params_s.copy()
                         mc_params.update({
-                            'strategy_type': mc_type,
+                            'strategy_type': mc_type, 'use_bb_walk': mc_use_bb,
                             'start_date': mc_start, 'end_date': mc_end,
                             'bt_cond': rnd_bc, 'cl_cond': rnd_cc,
                             'bt_buy': rnd_bb, 'bt_prof': rnd_bp/100, 'bt_time': rnd_bt,
