@@ -25,6 +25,14 @@ DEFAULT_ORDER_URL = "https://docs.google.com/spreadsheets/d/1PpgexM79XVvr23sVfi_
 # --- [페이지 설정] ---
 st.set_page_config(page_title="쪼꼬야옹 백테스트 연구소", page_icon="📈", layout="wide")
 
+# --- [세션 상태 초기화] ---
+if 'is_running' not in st.session_state:
+    st.session_state.is_running = False
+if 'data_loaded' not in st.session_state:
+    st.session_state.data_loaded = False
+if 'last_update' not in st.session_state:
+    st.session_state.last_update = None
+
 # --- [모바일 최적화 CSS] ---
 st.markdown("""
 <style>
@@ -624,9 +632,9 @@ with st.sidebar:
     with tab_a: params_a = render_strategy_inputs('a', '🔥 공격형')
     
     st.markdown("---")
-    if st.button("💾 현재 설정 저장하기", type="primary", use_container_width=True, disabled=st.session_state.is_running):
+    if st.button("💾 현재 설정 저장하기", type="primary", use_container_width=True, disabled=st.session_state.get("is_running", False)):
         with st.spinner("💾 설정을 저장하는 중..."):
-            st.session_state.is_running = True
+            st.session_state.get("is_running", False) = True
             time.sleep(0.3)
             if order_sheet_url:
                 if save_settings_to_gsheet(order_sheet_url):
@@ -637,7 +645,7 @@ with st.sidebar:
             else:
                 st.error("❌ 주문 전송 시트 URL을 먼저 입력해주세요.")
                 st.toast("주문 전송 시트 URL이 필요합니다.", icon="⚠️")
-            st.session_state.is_running = False
+            st.session_state.get("is_running", False) = False
 
 if sheet_url:
     with st.spinner("📡 구글 시트에서 데이터를 불러오는 중..."):
@@ -657,7 +665,7 @@ if sheet_url:
             
             # 실행 상태 초기화
             if 'is_running' not in st.session_state:
-                st.session_state.is_running = False
+                st.session_state.get("is_running", False) = False
             
             def render_dashboard(col, p_params, strategy_name, stock_name="SOXL"):
                 hts_orders = []
@@ -665,14 +673,14 @@ if sheet_url:
                     st.subheader(f"{strategy_name} ({p_params['strategy_type']})")
                     
                     # 백테스트 실행
-                    if st.session_state.is_running:
+                    if st.session_state.get("is_running", False):
                         st.info("⏳ 백테스트 실행 중...")
                         res = None
                     else:
                         res = backtest_engine_web(df, p_params)
                     
                     if not res: 
-                        if not st.session_state.is_running:
+                        if not st.session_state.get("is_running", False):
                             st.error("데이터 부족")
                         return hts_orders
 
@@ -780,9 +788,9 @@ if sheet_url:
             st.divider()
             all_orders = orders_stable + orders_agg
             if all_orders and order_sheet_url:
-                if st.button("🚀 HTS 주문 전송", type="primary", disabled=st.session_state.is_running):
+                if st.button("🚀 HTS 주문 전송", type="primary", disabled=st.session_state.get("is_running", False)):
                     with st.spinner("📤 주문을 전송하는 중..."):
-                        st.session_state.is_running = True
+                        st.session_state.get("is_running", False) = True
                         time.sleep(0.5)  # 사용자에게 로딩 erkennen
                         if send_orders_to_gsheet(pd.DataFrame(all_orders), order_sheet_url):
                             st.success("✅ 전송 완료!")
@@ -790,7 +798,7 @@ if sheet_url:
                         else:
                             st.error("❌ 전송 실패")
                             st.toast("주문 전송에 실패했습니다.", icon="❌")
-                        st.session_state.is_running = False
+                        st.session_state.get("is_running", False) = False
 
         # --- [탭 2: 백테스트 연구소] ---
         with tab_lab:
