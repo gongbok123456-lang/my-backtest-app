@@ -10,28 +10,12 @@ import random
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-# --- [버전 정보] ---
-__version__ = "v2.2.0"
-__version_date__ = "2026-02-14"
-__version_history__ = [
-    {"version": "v2.2.0", "date": __version_date__, "changes": ["모바일 최적화", "반응형 CSS", "컬럼 레이웃 조정"], "commits": ["a889d93"]},
-    {"version": "v2.1.0", "date": "2026-02-13", "changes": ["RSI 다이버전스 전략", "볼린저 밴드 익절 지연"], "commits": [""]}
-]
-
 # --- [기본 설정 값] ---
 DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1dK11y5aTIhDGfpMduNsuSgTDlDoPo-OF6uE5FIePXVg/edit"
 DEFAULT_ORDER_URL = "https://docs.google.com/spreadsheets/d/1PpgexM79XVvr23sVfi_6ZsrfASetVXhqjJQDYuISOnM/edit?gid=117251557#gid=117251557" 
 
 # --- [페이지 설정] ---
 st.set_page_config(page_title="쪼꼬야옹 백테스트 연구소", page_icon="📈", layout="wide")
-
-# --- [세션 상태 초기화] ---
-if 'is_running' not in st.session_state:
-    st.session_state.is_running = False
-if 'data_loaded' not in st.session_state:
-    st.session_state.data_loaded = False
-if 'last_update' not in st.session_state:
-    st.session_state.last_update = None
 
 # --- [모바일 최적화 CSS] ---
 st.markdown("""
@@ -504,6 +488,17 @@ def backtest_engine_web(df, params):
 st.title("📊 쪼꼬야옹의 듀얼 전략 연구소 (v2.1 BB)")
 
 with st.sidebar:
+    st.header("⚙️ 기본 데이터 연동")
+    sheet_url = st.text_input("🔗 주가 데이터 시트 (읽기)", value=DEFAULT_SHEET_URL)
+    st.markdown("---")
+    st.header("📤 HTS 주문 전송 설정")
+    order_sheet_url = st.text_input("🔗 주문 전송 시트 (쓰기)", value=DEFAULT_ORDER_URL, placeholder="구글시트 URL 입력")
+    if order_sheet_url: load_settings_from_gsheet(order_sheet_url)
+    
+    st.markdown("---")
+    st.header("⚔️ [실전] 전략 설정")
+    tab_s, tab_a = st.tabs(["🛡️ 안정형", "🔥 공격형"])
+
     def render_strategy_inputs(suffix, key_prefix):
         st.subheader(f"📊 {key_prefix} 기본 설정")
         k_bal = f"bal_{suffix}"
@@ -513,14 +508,17 @@ with st.sidebar:
         k_sd = f"sd_{suffix}"; k_ed = f"ed_{suffix}"
         start_date = c_d1.date_input("시작일", value=st.session_state.get(k_sd, datetime.date(2010, 1, 1)), max_value=today, key=k_sd)
         end_date = c_d2.date_input("종료일", value=today, max_value=today, key=k_ed)
+        
         st.markdown("---")
         st.write("⚙️ **전략 기준 선택**")
         k_type = f"st_type_{suffix}"
         # [NEW] RSI 다이버전스 추가
         strategy_type = st.radio("매매 기준 지표", ["MA 이격도", "RSI", "RSI 다이버전스"], index=0, horizontal=True, key=k_type)
+
         # [NEW] 볼린저 밴드 익절 지연 체크박스
         k_bb_walk = f"bb_walk_{suffix}"
         use_bb_walk = st.checkbox("🌭 볼린저 밴드 익절 지연 (Band Walk)", value=st.session_state.get(k_bb_walk, False), key=k_bb_walk, help="목표 수익률에 도달해도 주가가 볼린저 밴드 상단 위에 있으면 매도를 보류합니다.")
+
         st.markdown("---")
         st.write("⚙️ **파라미터 설정**")
         k_fee = f"fee_{suffix}"
@@ -528,16 +526,19 @@ with st.sidebar:
         k_pr = f"pr_{suffix}"; k_lr = f"lr_{suffix}"
         profit_rate = st.slider("이익 복리율 (%)", 0, 100, st.session_state.get(k_pr, 70), key=k_pr)
         loss_rate = st.slider("손실 복리율 (%)", 0, 100, st.session_state.get(k_lr, 50), key=k_lr)
+        
         c_loc1, c_loc2 = st.columns(2)
         k_add = f"add_{suffix}"; k_rng = f"rng_{suffix}"
         add_order_cnt = c_loc1.number_input("분할 횟수", value=st.session_state.get(k_add, 4), min_value=1, key=k_add) 
         loc_range = c_loc2.number_input("LOC 범위 (-%)", value=st.session_state.get(k_rng, 20.0), min_value=0.0, key=k_rng)
         k_ma = f"ma_{suffix}"
         ma_win = st.number_input("이평선 (MA)", 50, 300, st.session_state.get(k_ma, 200), key=k_ma)
+
         if strategy_type.startswith('RSI'):
             lbl_bt = "RSI 기준 (이하)"; def_bt = 30.0; step_val = 1.0; lbl_cl = "RSI 기준 (이상)"; def_cl = 70.0
         else:
             lbl_bt = "이격도 기준 (이하)"; def_bt = 0.90; step_val = 0.01; lbl_cl = "이격도 기준 (이상)"; def_cl = 1.10
+
         st.markdown("##### 📉 바닥 (Bottom)")
         c1, c2 = st.columns(2)
         k_bc=f"bc_{suffix}"; k_bb=f"bb_{suffix}"; k_bp=f"bp_{suffix}"; k_bt=f"bt_{suffix}"
@@ -545,12 +546,14 @@ with st.sidebar:
         bt_buy = c2.number_input("매수점%", -30.0, 30.0, st.session_state.get(k_bb, 15.0), step=0.1, key=k_bb)
         bt_prof = c1.number_input("익절%", 0.0, 100.0, st.session_state.get(k_bp, 2.5), step=0.1, key=k_bp)
         bt_time = c2.number_input("존버일", 1, 100, st.session_state.get(k_bt, 10), key=k_bt)
+
         st.markdown("##### ➖ 중간 (Middle)")
         c3, c4 = st.columns(2)
         k_mb=f"mb_{suffix}"; k_mp=f"mp_{suffix}"; k_mt=f"mt_{suffix}"
         md_buy = c3.number_input("매수점%", -30.0, 30.0, st.session_state.get(k_mb, -0.01), step=0.1, key=k_mb)
         md_prof = c4.number_input("익절%", 0.0, 100.0, st.session_state.get(k_mp, 2.8), step=0.1, key=k_mp)
         md_time = c3.number_input("존버일", 1, 100, st.session_state.get(k_mt, 15), key=k_mt)
+
         st.markdown("##### 📈 천장 (Ceiling)")
         c5, c6 = st.columns(2)
         k_cc=f"cc_{suffix}"; k_cb=f"cb_{suffix}"; k_cp=f"cp_{suffix}"; k_ct=f"ct_{suffix}"
@@ -558,6 +561,7 @@ with st.sidebar:
         cl_buy = c6.number_input("매수점%", -30.0, 30.0, st.session_state.get(k_cb, -0.1), step=0.1, key=k_cb)
         cl_prof = c5.number_input("익절%", 0.0, 100.0, st.session_state.get(k_cp, 1.5), step=0.1, key=k_cp)
         cl_time = c6.number_input("존버일", 1, 100, st.session_state.get(k_ct, 40), key=k_ct)
+        
         st.markdown("---")
         st.write("⚖️ **티어별 비중**")
         base_key = f"base_w_{suffix}"
@@ -566,10 +570,12 @@ with st.sidebar:
             default_data = {'Tier': [f'Tier {i}' for i in range(1, 11)], 'Bottom': [10.0]*10, 'Middle': [10.0]*10, 'Ceiling': [10.0]*10}
             initial_data = pd.DataFrame(default_data).set_index('Tier')
             st.session_state[base_key] = initial_data
+
         current_ver = st.session_state.editor_ver
         unique_key = f"w_{suffix}_v{current_ver}"
         edited_w = st.data_editor(initial_data, key=unique_key, column_config={"Bottom": st.column_config.NumberColumn("바닥%", format="%.1f%%"), "Middle": st.column_config.NumberColumn("중간%", format="%.1f%%"), "Ceiling": st.column_config.NumberColumn("천장%", format="%.1f%%")}, use_container_width=True)
         st.session_state[f"current_w_{suffix}"] = edited_w
+
         return {
             'strategy_type': strategy_type, 'use_bb_walk': use_bb_walk,
             'start_date': start_date, 'end_date': end_date,
@@ -583,87 +589,31 @@ with st.sidebar:
             'tier_weights': edited_w, 'label': key_prefix
         }
 
-    st.header("⚙️ 기본 데이터 연동")
-    sheet_url = st.text_input("🔗 주가 데이터 시트 (읽기)", value=DEFAULT_SHEET_URL)
-    st.markdown("---")
-    
-    # --- [상태 표시] ---
-    st.caption("📊 상태")
-    if st.session_state.last_update:
-        st.caption(f"🕐 마지막 업데이트: {st.session_state.last_update.strftime('%H:%M')}")
-    else:
-        st.caption("🕐 데이터 미로드")
-    if st.session_state.data_loaded:
-        st.caption("✅ 데이터 연결됨")
-    else:
-        st.caption("⚠️ 데이터 연결 대기 중")
+    with tab_s: params_s = render_strategy_inputs('s', '🛡️ 안정형')
+    with tab_a: params_a = render_strategy_inputs('a', '🔥 공격형')
     
     st.markdown("---")
-    st.header("📤 HTS 주문 전송 설정")
-    order_sheet_url = st.text_input("🔗 주문 전송 시트 (쓰기)", value=DEFAULT_ORDER_URL, placeholder="구글시트 URL 입력")
-    if order_sheet_url: load_settings_from_gsheet(order_sheet_url)
-    
-    st.markdown("---")
-    st.header("⚔️ [실전] 전략 설정")
-
-    tab_s, tab_a = st.tabs(["🛡️ 안정형", "🔥 공격형"])
-    with tab_s:
-        params_s = render_strategy_inputs('s', '🛡️ 안정형')
-        st.session_state['params_s'] = params_s
-    with tab_a:
-        params_a = render_strategy_inputs('a', '🔥 공격형')
-        st.session_state['params_a'] = params_a
-
-    st.markdown("---")
-    if st.button("💾 현재 설정 저장하기", type="primary", use_container_width=True, disabled=st.session_state.get("is_running", False)):
-        with st.spinner("💾 설정을 저장하는 중..."):
-            st.session_state.is_running = True
-            time.sleep(0.3)
-            if order_sheet_url:
-                if save_settings_to_gsheet(order_sheet_url):
-                    st.toast("✅ 설정이 구글 시트에 저장되었습니다!", icon="💾")
-                else:
-                    st.error("❌ 설정 저장 실패")
-                    st.toast("저장에 실패했습니다. 권한을 확인해주세요.", icon="❌")
-            else:
-                st.error("❌ 주문 전송 시트 URL을 먼저 입력해주세요.")
-                st.toast("주문 전송 시트 URL이 필요합니다.", icon="⚠️")
-            st.session_state.is_running = False
+    if st.button("💾 현재 설정 저장하기", type="primary", use_container_width=True):
+        if order_sheet_url: save_settings_to_gsheet(order_sheet_url)
+        else: st.error("주문 전송 시트 URL을 먼저 입력해주세요.")
 
 if sheet_url:
-    with st.spinner("📡 구글 시트에서 데이터를 불러오는 중..."):
-        df = load_data_from_gsheet(sheet_url)
-    
+    df = load_data_from_gsheet(sheet_url)
     if df is not None:
-        # 데이터 로드 성공 시 상태 업데이트
-        st.session_state.data_loaded = True
-        st.session_state.last_update = datetime.datetime.now() + datetime.timedelta(hours=9)
+        tab_dash, tab_lab, tab_mc = st.tabs(["📢 실전 대시보드", "🧪 백테스트 연구소", "🎲 몬테카를로 최적화"])
+
         # --- [탭 1: 실전 대시보드] ---
         with tab_dash:
             last_date_str = df.index[-1].strftime('%Y-%m-%d')
             st.header(f"📢 오늘의 투자 브리핑 ({last_date_str})")
             col_stable, col_agg = st.columns([1, 1])
             
-            # 실행 상태 초기화
-            if 'is_running' not in st.session_state:
-                st.session_state.is_running = False
-            
             def render_dashboard(col, p_params, strategy_name, stock_name="SOXL"):
                 hts_orders = []
                 with col:
                     st.subheader(f"{strategy_name} ({p_params['strategy_type']})")
-                    
-                    # 백테스트 실행
-                    if st.session_state.get("is_running", False):
-                        st.info("⏳ 백테스트 실행 중...")
-                        res = None
-                    else:
-                        res = backtest_engine_web(df, p_params)
-                    
-                    if not res: 
-                        if not st.session_state.get("is_running", False):
-                            st.error("데이터 부족")
-                        return hts_orders
+                    res = backtest_engine_web(df, p_params)
+                    if not res: st.error("데이터 부족"); return hts_orders
 
                     last_row = res['LastData']
                     daily_last = res['DailyLog'].iloc[-1]
@@ -769,17 +719,9 @@ if sheet_url:
             st.divider()
             all_orders = orders_stable + orders_agg
             if all_orders and order_sheet_url:
-                if st.button("🚀 HTS 주문 전송", type="primary", disabled=st.session_state.get("is_running", False)):
-                    with st.spinner("📤 주문을 전송하는 중..."):
-                        st.session_state.is_running = True
-                        time.sleep(0.5)  # 사용자에게 로딩 erkennen
-                        if send_orders_to_gsheet(pd.DataFrame(all_orders), order_sheet_url):
-                            st.success("✅ 전송 완료!")
-                            st.toast("주문이 성공적으로 전송되었습니다!", icon="✅")
-                        else:
-                            st.error("❌ 전송 실패")
-                            st.toast("주문 전송에 실패했습니다.", icon="❌")
-                        st.session_state.is_running = False
+                if st.button("🚀 HTS 주문 전송", type="primary"):
+                    if send_orders_to_gsheet(pd.DataFrame(all_orders), order_sheet_url): st.success("전송 완료")
+                    else: st.error("전송 실패")
 
         # --- [탭 2: 백테스트 연구소] ---
         with tab_lab:
@@ -917,9 +859,7 @@ if sheet_url:
             with c_mc2:
                 if mc_run:
                     new_results = []
-                    progress_text = st.empty()
-                    bar = st.progress(0, text="시뮬레이션 준비 중...")
-                    
+                    bar = st.progress(0)
                     for i in range(mc_trials):
                         # 랜덤 값 생성
                         rnd_bc = random.uniform(r_bc_min, r_bc_max)
@@ -959,11 +899,7 @@ if sheet_url:
                                 'CAGR': res['CAGR'], 'MDD': res['MDD'],
                                 'Score': res['CAGR'] / abs(res['MDD']) if res['MDD'] != 0 else 0
                             })
-                        progress = (i + 1) / mc_trials
-                        bar.progress(progress, text=f"{i+1}/{mc_trials} 완료 ({progress*100:.1f}%)")
-                    
-                    progress_text.success(f"🎲 {mc_trials}회 시뮬레이션 완료!")
-                    bar.progress(1.0, text="완료!")
+                        bar.progress((i + 1) / mc_trials)
                     
                     # 결과 누적
                     if new_results:
