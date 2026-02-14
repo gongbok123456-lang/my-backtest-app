@@ -504,6 +504,85 @@ def backtest_engine_web(df, params):
 st.title("📊 쪼꼬야옹의 듀얼 전략 연구소 (v2.1 BB)")
 
 with st.sidebar:
+    def render_strategy_inputs(suffix, key_prefix):
+        st.subheader(f"📊 {key_prefix} 기본 설정")
+        k_bal = f"bal_{suffix}"
+        balance = st.number_input(f"초기 자본 ($)", value=st.session_state.get(k_bal, 10000), key=k_bal)
+        today = datetime.date.today()
+        c_d1, c_d2 = st.columns(2)
+        k_sd = f"sd_{suffix}"; k_ed = f"ed_{suffix}"
+        start_date = c_d1.date_input("시작일", value=st.session_state.get(k_sd, datetime.date(2010, 1, 1)), max_value=today, key=k_sd)
+        end_date = c_d2.date_input("종료일", value=today, max_value=today, key=k_ed)
+        st.markdown("---")
+        st.write("⚙️ **전략 기준 선택**")
+        k_type = f"st_type_{suffix}"
+        # [NEW] RSI 다이버전스 추가
+        strategy_type = st.radio("매매 기준 지표", ["MA 이격도", "RSI", "RSI 다이버전스"], index=0, horizontal=True, key=k_type)
+        # [NEW] 볼린저 밴드 익절 지연 체크박스
+        k_bb_walk = f"bb_walk_{suffix}"
+        use_bb_walk = st.checkbox("🌭 볼린저 밴드 익절 지연 (Band Walk)", value=st.session_state.get(k_bb_walk, False), key=k_bb_walk, help="목표 수익률에 도달해도 주가가 볼린저 밴드 상단 위에 있으면 매도를 보류합니다.")
+        st.markdown("---")
+        st.write("⚙️ **파라미터 설정**")
+        k_fee = f"fee_{suffix}"
+        fee = st.number_input("수수료 (%)", value=st.session_state.get(k_fee, 0.07), step=0.01, format="%.2f", key=k_fee)
+        k_pr = f"pr_{suffix}"; k_lr = f"lr_{suffix}"
+        profit_rate = st.slider("이익 복리율 (%)", 0, 100, st.session_state.get(k_pr, 70), key=k_pr)
+        loss_rate = st.slider("손실 복리율 (%)", 0, 100, st.session_state.get(k_lr, 50), key=k_lr)
+        c_loc1, c_loc2 = st.columns(2)
+        k_add = f"add_{suffix}"; k_rng = f"rng_{suffix}"
+        add_order_cnt = c_loc1.number_input("분할 횟수", value=st.session_state.get(k_add, 4), min_value=1, key=k_add) 
+        loc_range = c_loc2.number_input("LOC 범위 (-%)", value=st.session_state.get(k_rng, 20.0), min_value=0.0, key=k_rng)
+        k_ma = f"ma_{suffix}"
+        ma_win = st.number_input("이평선 (MA)", 50, 300, st.session_state.get(k_ma, 200), key=k_ma)
+        if strategy_type.startswith('RSI'):
+            lbl_bt = "RSI 기준 (이하)"; def_bt = 30.0; step_val = 1.0; lbl_cl = "RSI 기준 (이상)"; def_cl = 70.0
+        else:
+            lbl_bt = "이격도 기준 (이하)"; def_bt = 0.90; step_val = 0.01; lbl_cl = "이격도 기준 (이상)"; def_cl = 1.10
+        st.markdown("##### 📉 바닥 (Bottom)")
+        c1, c2 = st.columns(2)
+        k_bc=f"bc_{suffix}"; k_bb=f"bb_{suffix}"; k_bp=f"bp_{suffix}"; k_bt=f"bt_{suffix}"
+        bt_cond = c1.number_input(lbl_bt, 0.0, 100.0, st.session_state.get(k_bc, def_bt), step=step_val, key=k_bc)
+        bt_buy = c2.number_input("매수점%", -30.0, 30.0, st.session_state.get(k_bb, 15.0), step=0.1, key=k_bb)
+        bt_prof = c1.number_input("익절%", 0.0, 100.0, st.session_state.get(k_bp, 2.5), step=0.1, key=k_bp)
+        bt_time = c2.number_input("존버일", 1, 100, st.session_state.get(k_bt, 10), key=k_bt)
+        st.markdown("##### ➖ 중간 (Middle)")
+        c3, c4 = st.columns(2)
+        k_mb=f"mb_{suffix}"; k_mp=f"mp_{suffix}"; k_mt=f"mt_{suffix}"
+        md_buy = c3.number_input("매수점%", -30.0, 30.0, st.session_state.get(k_mb, -0.01), step=0.1, key=k_mb)
+        md_prof = c4.number_input("익절%", 0.0, 100.0, st.session_state.get(k_mp, 2.8), step=0.1, key=k_mp)
+        md_time = c3.number_input("존버일", 1, 100, st.session_state.get(k_mt, 15), key=k_mt)
+        st.markdown("##### 📈 천장 (Ceiling)")
+        c5, c6 = st.columns(2)
+        k_cc=f"cc_{suffix}"; k_cb=f"cb_{suffix}"; k_cp=f"cp_{suffix}"; k_ct=f"ct_{suffix}"
+        cl_cond = c5.number_input(lbl_cl, 0.0, 100.0, st.session_state.get(k_cc, def_cl), step=step_val, key=k_cc)
+        cl_buy = c6.number_input("매수점%", -30.0, 30.0, st.session_state.get(k_cb, -0.1), step=0.1, key=k_cb)
+        cl_prof = c5.number_input("익절%", 0.0, 100.0, st.session_state.get(k_cp, 1.5), step=0.1, key=k_cp)
+        cl_time = c6.number_input("존버일", 1, 100, st.session_state.get(k_ct, 40), key=k_ct)
+        st.markdown("---")
+        st.write("⚖️ **티어별 비중**")
+        base_key = f"base_w_{suffix}"
+        if base_key in st.session_state: initial_data = st.session_state[base_key]
+        else:
+            default_data = {'Tier': [f'Tier {i}' for i in range(1, 11)], 'Bottom': [10.0]*10, 'Middle': [10.0]*10, 'Ceiling': [10.0]*10}
+            initial_data = pd.DataFrame(default_data).set_index('Tier')
+            st.session_state[base_key] = initial_data
+        current_ver = st.session_state.editor_ver
+        unique_key = f"w_{suffix}_v{current_ver}"
+        edited_w = st.data_editor(initial_data, key=unique_key, column_config={"Bottom": st.column_config.NumberColumn("바닥%", format="%.1f%%"), "Middle": st.column_config.NumberColumn("중간%", format="%.1f%%"), "Ceiling": st.column_config.NumberColumn("천장%", format="%.1f%%")}, use_container_width=True)
+        st.session_state[f"current_w_{suffix}"] = edited_w
+        return {
+            'strategy_type': strategy_type, 'use_bb_walk': use_bb_walk,
+            'start_date': start_date, 'end_date': end_date,
+            'initial_balance': balance, 'fee_rate': fee/100,
+            'profit_rate': profit_rate/100.0, 'loss_rate': loss_rate/100.0,
+            'loc_range': loc_range, 'add_order_cnt': add_order_cnt,
+            'force_round': True, 'ma_window': ma_win, 
+            'bt_cond': bt_cond, 'bt_buy': bt_buy, 'bt_prof': bt_prof/100, 'bt_time': bt_time,
+            'md_buy': md_buy, 'md_prof': md_prof/100, 'md_time': md_time,
+            'cl_cond': cl_cond, 'cl_buy': cl_buy, 'cl_prof': cl_prof/100, 'cl_time': cl_time,
+            'tier_weights': edited_w, 'label': key_prefix
+        }
+
     st.header("⚙️ 기본 데이터 연동")
     sheet_url = st.text_input("🔗 주가 데이터 시트 (읽기)", value=DEFAULT_SHEET_URL)
     st.markdown("---")
@@ -534,96 +613,6 @@ with st.sidebar:
     with tab_a:
         params_a = render_strategy_inputs('a', '🔥 공격형')
         st.session_state['params_a'] = params_a
-
-    def render_strategy_inputs(suffix, key_prefix):
-        st.subheader(f"📊 {key_prefix} 기본 설정")
-        k_bal = f"bal_{suffix}"
-        balance = st.number_input(f"초기 자본 ($)", value=st.session_state.get(k_bal, 10000), key=k_bal)
-        today = datetime.date.today()
-        c_d1, c_d2 = st.columns(2)
-        k_sd = f"sd_{suffix}"; k_ed = f"ed_{suffix}"
-        start_date = c_d1.date_input("시작일", value=st.session_state.get(k_sd, datetime.date(2010, 1, 1)), max_value=today, key=k_sd)
-        end_date = c_d2.date_input("종료일", value=today, max_value=today, key=k_ed)
-        
-        st.markdown("---")
-        st.write("⚙️ **전략 기준 선택**")
-        k_type = f"st_type_{suffix}"
-        # [NEW] RSI 다이버전스 추가
-        strategy_type = st.radio("매매 기준 지표", ["MA 이격도", "RSI", "RSI 다이버전스"], index=0, horizontal=True, key=k_type)
-
-        # [NEW] 볼린저 밴드 익절 지연 체크박스
-        k_bb_walk = f"bb_walk_{suffix}"
-        use_bb_walk = st.checkbox("🌭 볼린저 밴드 익절 지연 (Band Walk)", value=st.session_state.get(k_bb_walk, False), key=k_bb_walk, help="목표 수익률에 도달해도 주가가 볼린저 밴드 상단 위에 있으면 매도를 보류합니다.")
-
-        st.markdown("---")
-        st.write("⚙️ **파라미터 설정**")
-        k_fee = f"fee_{suffix}"
-        fee = st.number_input("수수료 (%)", value=st.session_state.get(k_fee, 0.07), step=0.01, format="%.2f", key=k_fee)
-        k_pr = f"pr_{suffix}"; k_lr = f"lr_{suffix}"
-        profit_rate = st.slider("이익 복리율 (%)", 0, 100, st.session_state.get(k_pr, 70), key=k_pr)
-        loss_rate = st.slider("손실 복리율 (%)", 0, 100, st.session_state.get(k_lr, 50), key=k_lr)
-        
-        c_loc1, c_loc2 = st.columns(2)
-        k_add = f"add_{suffix}"; k_rng = f"rng_{suffix}"
-        add_order_cnt = c_loc1.number_input("분할 횟수", value=st.session_state.get(k_add, 4), min_value=1, key=k_add) 
-        loc_range = c_loc2.number_input("LOC 범위 (-%)", value=st.session_state.get(k_rng, 20.0), min_value=0.0, key=k_rng)
-        k_ma = f"ma_{suffix}"
-        ma_win = st.number_input("이평선 (MA)", 50, 300, st.session_state.get(k_ma, 200), key=k_ma)
-
-        if strategy_type.startswith('RSI'):
-            lbl_bt = "RSI 기준 (이하)"; def_bt = 30.0; step_val = 1.0; lbl_cl = "RSI 기준 (이상)"; def_cl = 70.0
-        else:
-            lbl_bt = "이격도 기준 (이하)"; def_bt = 0.90; step_val = 0.01; lbl_cl = "이격도 기준 (이상)"; def_cl = 1.10
-
-        st.markdown("##### 📉 바닥 (Bottom)")
-        c1, c2 = st.columns(2)
-        k_bc=f"bc_{suffix}"; k_bb=f"bb_{suffix}"; k_bp=f"bp_{suffix}"; k_bt=f"bt_{suffix}"
-        bt_cond = c1.number_input(lbl_bt, 0.0, 100.0, st.session_state.get(k_bc, def_bt), step=step_val, key=k_bc)
-        bt_buy = c2.number_input("매수점%", -30.0, 30.0, st.session_state.get(k_bb, 15.0), step=0.1, key=k_bb)
-        bt_prof = c1.number_input("익절%", 0.0, 100.0, st.session_state.get(k_bp, 2.5), step=0.1, key=k_bp)
-        bt_time = c2.number_input("존버일", 1, 100, st.session_state.get(k_bt, 10), key=k_bt)
-
-        st.markdown("##### ➖ 중간 (Middle)")
-        c3, c4 = st.columns(2)
-        k_mb=f"mb_{suffix}"; k_mp=f"mp_{suffix}"; k_mt=f"mt_{suffix}"
-        md_buy = c3.number_input("매수점%", -30.0, 30.0, st.session_state.get(k_mb, -0.01), step=0.1, key=k_mb)
-        md_prof = c4.number_input("익절%", 0.0, 100.0, st.session_state.get(k_mp, 2.8), step=0.1, key=k_mp)
-        md_time = c3.number_input("존버일", 1, 100, st.session_state.get(k_mt, 15), key=k_mt)
-
-        st.markdown("##### 📈 천장 (Ceiling)")
-        c5, c6 = st.columns(2)
-        k_cc=f"cc_{suffix}"; k_cb=f"cb_{suffix}"; k_cp=f"cp_{suffix}"; k_ct=f"ct_{suffix}"
-        cl_cond = c5.number_input(lbl_cl, 0.0, 100.0, st.session_state.get(k_cc, def_cl), step=step_val, key=k_cc)
-        cl_buy = c6.number_input("매수점%", -30.0, 30.0, st.session_state.get(k_cb, -0.1), step=0.1, key=k_cb)
-        cl_prof = c5.number_input("익절%", 0.0, 100.0, st.session_state.get(k_cp, 1.5), step=0.1, key=k_cp)
-        cl_time = c6.number_input("존버일", 1, 100, st.session_state.get(k_ct, 40), key=k_ct)
-        
-        st.markdown("---")
-        st.write("⚖️ **티어별 비중**")
-        base_key = f"base_w_{suffix}"
-        if base_key in st.session_state: initial_data = st.session_state[base_key]
-        else:
-            default_data = {'Tier': [f'Tier {i}' for i in range(1, 11)], 'Bottom': [10.0]*10, 'Middle': [10.0]*10, 'Ceiling': [10.0]*10}
-            initial_data = pd.DataFrame(default_data).set_index('Tier')
-            st.session_state[base_key] = initial_data
-
-        current_ver = st.session_state.editor_ver
-        unique_key = f"w_{suffix}_v{current_ver}"
-        edited_w = st.data_editor(initial_data, key=unique_key, column_config={"Bottom": st.column_config.NumberColumn("바닥%", format="%.1f%%"), "Middle": st.column_config.NumberColumn("중간%", format="%.1f%%"), "Ceiling": st.column_config.NumberColumn("천장%", format="%.1f%%")}, use_container_width=True)
-        st.session_state[f"current_w_{suffix}"] = edited_w
-
-        return {
-            'strategy_type': strategy_type, 'use_bb_walk': use_bb_walk,
-            'start_date': start_date, 'end_date': end_date,
-            'initial_balance': balance, 'fee_rate': fee/100,
-            'profit_rate': profit_rate/100.0, 'loss_rate': loss_rate/100.0,
-            'loc_range': loc_range, 'add_order_cnt': add_order_cnt,
-            'force_round': True, 'ma_window': ma_win, 
-            'bt_cond': bt_cond, 'bt_buy': bt_buy, 'bt_prof': bt_prof/100, 'bt_time': bt_time,
-            'md_buy': md_buy, 'md_prof': md_prof/100, 'md_time': md_time,
-            'cl_cond': cl_cond, 'cl_buy': cl_buy, 'cl_prof': cl_prof/100, 'cl_time': cl_time,
-            'tier_weights': edited_w, 'label': key_prefix
-        }
 
     st.markdown("---")
     if st.button("💾 현재 설정 저장하기", type="primary", use_container_width=True, disabled=st.session_state.get("is_running", False)):
