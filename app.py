@@ -526,6 +526,7 @@ with st.sidebar:
     
     st.markdown("---")
     st.header("⚔️ [실전] 전략 설정")
+        tab_s, tab_a = st.tabs(["🛡️ 안정형", "🔥 공격형"])
 
     def render_strategy_inputs(suffix, key_prefix):
         st.subheader(f"📊 {key_prefix} 기본 설정")
