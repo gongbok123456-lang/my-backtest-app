@@ -634,7 +634,7 @@ with st.sidebar:
     st.markdown("---")
     if st.button("💾 현재 설정 저장하기", type="primary", use_container_width=True, disabled=st.session_state.get("is_running", False)):
         with st.spinner("💾 설정을 저장하는 중..."):
-            st.session_state.get("is_running", False) = True
+            st.session_state.is_running = True
             time.sleep(0.3)
             if order_sheet_url:
                 if save_settings_to_gsheet(order_sheet_url):
@@ -645,7 +645,7 @@ with st.sidebar:
             else:
                 st.error("❌ 주문 전송 시트 URL을 먼저 입력해주세요.")
                 st.toast("주문 전송 시트 URL이 필요합니다.", icon="⚠️")
-            st.session_state.get("is_running", False) = False
+            st.session_state.is_running = False
 
 if sheet_url:
     with st.spinner("📡 구글 시트에서 데이터를 불러오는 중..."):
@@ -665,7 +665,7 @@ if sheet_url:
             
             # 실행 상태 초기화
             if 'is_running' not in st.session_state:
-                st.session_state.get("is_running", False) = False
+                st.session_state.is_running = False
             
             def render_dashboard(col, p_params, strategy_name, stock_name="SOXL"):
                 hts_orders = []
@@ -790,7 +790,7 @@ if sheet_url:
             if all_orders and order_sheet_url:
                 if st.button("🚀 HTS 주문 전송", type="primary", disabled=st.session_state.get("is_running", False)):
                     with st.spinner("📤 주문을 전송하는 중..."):
-                        st.session_state.get("is_running", False) = True
+                        st.session_state.is_running = True
                         time.sleep(0.5)  # 사용자에게 로딩 erkennen
                         if send_orders_to_gsheet(pd.DataFrame(all_orders), order_sheet_url):
                             st.success("✅ 전송 완료!")
@@ -798,7 +798,7 @@ if sheet_url:
                         else:
                             st.error("❌ 전송 실패")
                             st.toast("주문 전송에 실패했습니다.", icon="❌")
-                        st.session_state.get("is_running", False) = False
+                        st.session_state.is_running = False
 
         # --- [탭 2: 백테스트 연구소] ---
         with tab_lab:
