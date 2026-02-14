@@ -10,6 +10,14 @@ import random
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
+# --- [버전 정보] ---
+__version__ = "v2.2.0"
+__version_date__ = "2026-02-14"
+__version_history__ = [
+    {"version": "v2.2.0", "date": __version_date__, "changes": ["모바일 최적화", "반응형 CSS", "컬럼 레이웃 조정"], "commits": ["a889d93"]},
+    {"version": "v2.1.0", "date": "2026-02-13", "changes": ["RSI 다이버전스 전략", "볼린저 밴드 익절 지연"], "commits": [""]}
+]
+
 # --- [기본 설정 값] ---
 DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1dK11y5aTIhDGfpMduNsuSgTDlDoPo-OF6uE5FIePXVg/edit"
 DEFAULT_ORDER_URL = "https://docs.google.com/spreadsheets/d/1PpgexM79XVvr23sVfi_6ZsrfASetVXhqjJQDYuISOnM/edit?gid=117251557#gid=117251557" 
@@ -488,6 +496,29 @@ def backtest_engine_web(df, params):
 st.title("📊 쪼꼬야옹의 듀얼 전략 연구소 (v2.1 BB)")
 
 with st.sidebar:
+    # --- [버전 정보] ---
+    st.caption(f"📱 **버전:** {__version__}")
+    st.caption(f"📅 **업데이트:** {__version_date__}")
+    
+    # --- [상태 표시] ---
+    if 'last_update' not in st.session_state:
+        st.session_state.last_update = None
+    if 'data_loaded' not in st.session_state:
+        st.session_state.data_loaded = False
+    
+    st.markdown("---")
+    st.caption("📊 **상태**")
+    if st.session_state.last_update:
+        st.caption(f"🕐 마지막 업데이트: {st.session_state.last_update.strftime('%H:%M')}")
+    else:
+        st.caption("🕐 데이터 미로드")
+    
+    if st.session_state.data_loaded:
+        st.caption("✅ 데이터 연결됨")
+    else:
+        st.caption("⚠️ 데이터 연결 대기 중")
+    
+    st.markdown("---")
     st.header("⚙️ 기본 데이터 연동")
     sheet_url = st.text_input("🔗 주가 데이터 시트 (읽기)", value=DEFAULT_SHEET_URL)
     st.markdown("---")
@@ -593,13 +624,29 @@ with st.sidebar:
     with tab_a: params_a = render_strategy_inputs('a', '🔥 공격형')
     
     st.markdown("---")
-    if st.button("💾 현재 설정 저장하기", type="primary", use_container_width=True):
-        if order_sheet_url: save_settings_to_gsheet(order_sheet_url)
-        else: st.error("주문 전송 시트 URL을 먼저 입력해주세요.")
+    if st.button("💾 현재 설정 저장하기", type="primary", use_container_width=True, disabled=st.session_state.is_running):
+        with st.spinner("💾 설정을 저장하는 중..."):
+            st.session_state.is_running = True
+            time.sleep(0.3)
+            if order_sheet_url:
+                if save_settings_to_gsheet(order_sheet_url):
+                    st.toast("✅ 설정이 구글 시트에 저장되었습니다!", icon="💾")
+                else:
+                    st.error("❌ 설정 저장 실패")
+                    st.toast("저장에 실패했습니다. 권한을 확인해주세요.", icon="❌")
+            else:
+                st.error("❌ 주문 전송 시트 URL을 먼저 입력해주세요.")
+                st.toast("주문 전송 시트 URL이 필요합니다.", icon="⚠️")
+            st.session_state.is_running = False
 
 if sheet_url:
-    df = load_data_from_gsheet(sheet_url)
+    with st.spinner("📡 구글 시트에서 데이터를 불러오는 중..."):
+        df = load_data_from_gsheet(sheet_url)
+    
     if df is not None:
+        # 데이터 로드 성공 시 상태 업데이트
+        st.session_state.data_loaded = True
+        st.session_state.last_update = datetime.datetime.now()
         tab_dash, tab_lab, tab_mc = st.tabs(["📢 실전 대시보드", "🧪 백테스트 연구소", "🎲 몬테카를로 최적화"])
 
         # --- [탭 1: 실전 대시보드] ---
@@ -608,12 +655,26 @@ if sheet_url:
             st.header(f"📢 오늘의 투자 브리핑 ({last_date_str})")
             col_stable, col_agg = st.columns([1, 1])
             
+            # 실행 상태 초기화
+            if 'is_running' not in st.session_state:
+                st.session_state.is_running = False
+            
             def render_dashboard(col, p_params, strategy_name, stock_name="SOXL"):
                 hts_orders = []
                 with col:
                     st.subheader(f"{strategy_name} ({p_params['strategy_type']})")
-                    res = backtest_engine_web(df, p_params)
-                    if not res: st.error("데이터 부족"); return hts_orders
+                    
+                    # 백테스트 실행
+                    if st.session_state.is_running:
+                        st.info("⏳ 백테스트 실행 중...")
+                        res = None
+                    else:
+                        res = backtest_engine_web(df, p_params)
+                    
+                    if not res: 
+                        if not st.session_state.is_running:
+                            st.error("데이터 부족")
+                        return hts_orders
 
                     last_row = res['LastData']
                     daily_last = res['DailyLog'].iloc[-1]
@@ -719,9 +780,17 @@ if sheet_url:
             st.divider()
             all_orders = orders_stable + orders_agg
             if all_orders and order_sheet_url:
-                if st.button("🚀 HTS 주문 전송", type="primary"):
-                    if send_orders_to_gsheet(pd.DataFrame(all_orders), order_sheet_url): st.success("전송 완료")
-                    else: st.error("전송 실패")
+                if st.button("🚀 HTS 주문 전송", type="primary", disabled=st.session_state.is_running):
+                    with st.spinner("📤 주문을 전송하는 중..."):
+                        st.session_state.is_running = True
+                        time.sleep(0.5)  # 사용자에게 로딩 erkennen
+                        if send_orders_to_gsheet(pd.DataFrame(all_orders), order_sheet_url):
+                            st.success("✅ 전송 완료!")
+                            st.toast("주문이 성공적으로 전송되었습니다!", icon="✅")
+                        else:
+                            st.error("❌ 전송 실패")
+                            st.toast("주문 전송에 실패했습니다.", icon="❌")
+                        st.session_state.is_running = False
 
         # --- [탭 2: 백테스트 연구소] ---
         with tab_lab:
@@ -859,7 +928,9 @@ if sheet_url:
             with c_mc2:
                 if mc_run:
                     new_results = []
-                    bar = st.progress(0)
+                    progress_text = st.empty()
+                    bar = st.progress(0, text="시뮬레이션 준비 중...")
+                    
                     for i in range(mc_trials):
                         # 랜덤 값 생성
                         rnd_bc = random.uniform(r_bc_min, r_bc_max)
@@ -899,7 +970,11 @@ if sheet_url:
                                 'CAGR': res['CAGR'], 'MDD': res['MDD'],
                                 'Score': res['CAGR'] / abs(res['MDD']) if res['MDD'] != 0 else 0
                             })
-                        bar.progress((i + 1) / mc_trials)
+                        progress = (i + 1) / mc_trials
+                        bar.progress(progress, text=f"{i+1}/{mc_trials} 완료 ({progress*100:.1f}%)")
+                    
+                    progress_text.success(f"🎲 {mc_trials}회 시뮬레이션 완료!")
+                    bar.progress(1.0, text="완료!")
                     
                     # 결과 누적
                     if new_results:
