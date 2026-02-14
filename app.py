@@ -504,31 +504,21 @@ def backtest_engine_web(df, params):
 st.title("📊 쪼꼬야옹의 듀얼 전략 연구소 (v2.1 BB)")
 
 with st.sidebar:
-    # --- [버전 정보] ---
-    st.caption(f"📱 **버전:** {__version__}")
-    st.caption(f"📅 **업데이트:** {__version_date__}")
+    st.header("⚙️ 기본 데이터 연동")
+    sheet_url = st.text_input("🔗 주가 데이터 시트 (읽기)", value=DEFAULT_SHEET_URL)
+    st.markdown("---")
     
     # --- [상태 표시] ---
-    if 'last_update' not in st.session_state:
-        st.session_state.last_update = None
-    if 'data_loaded' not in st.session_state:
-        st.session_state.data_loaded = False
-    
-    st.markdown("---")
-    st.caption("📊 **상태**")
+    st.caption("📊 상태")
     if st.session_state.last_update:
         st.caption(f"🕐 마지막 업데이트: {st.session_state.last_update.strftime('%H:%M')}")
     else:
         st.caption("🕐 데이터 미로드")
-    
     if st.session_state.data_loaded:
         st.caption("✅ 데이터 연결됨")
     else:
         st.caption("⚠️ 데이터 연결 대기 중")
     
-    st.markdown("---")
-    st.header("⚙️ 기본 데이터 연동")
-    sheet_url = st.text_input("🔗 주가 데이터 시트 (읽기)", value=DEFAULT_SHEET_URL)
     st.markdown("---")
     st.header("📤 HTS 주문 전송 설정")
     order_sheet_url = st.text_input("🔗 주문 전송 시트 (쓰기)", value=DEFAULT_ORDER_URL, placeholder="구글시트 URL 입력")
@@ -536,7 +526,6 @@ with st.sidebar:
     
     st.markdown("---")
     st.header("⚔️ [실전] 전략 설정")
-    tab_s, tab_a = st.tabs(["🛡️ 안정형", "🔥 공격형"])
 
     def render_strategy_inputs(suffix, key_prefix):
         st.subheader(f"📊 {key_prefix} 기본 설정")
@@ -654,7 +643,7 @@ if sheet_url:
     if df is not None:
         # 데이터 로드 성공 시 상태 업데이트
         st.session_state.data_loaded = True
-        st.session_state.last_update = datetime.datetime.now()
+        st.session_state.last_update = datetime.datetime.now() + datetime.timedelta(hours=9)
         tab_dash, tab_lab, tab_mc = st.tabs(["📢 실전 대시보드", "🧪 백테스트 연구소", "🎲 몬테카를로 최적화"])
 
         # --- [탭 1: 실전 대시보드] ---
