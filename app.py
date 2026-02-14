@@ -526,7 +526,14 @@ with st.sidebar:
     
     st.markdown("---")
     st.header("⚔️ [실전] 전략 설정")
-        tab_s, tab_a = st.tabs(["🛡️ 안정형", "🔥 공격형"])
+
+    tab_s, tab_a = st.tabs(["🛡️ 안정형", "🔥 공격형"])
+    with tab_s:
+        params_s = render_strategy_inputs('s', '🛡️ 안정형')
+        st.session_state['params_s'] = params_s
+    with tab_a:
+        params_a = render_strategy_inputs('a', '🔥 공격형')
+        st.session_state['params_a'] = params_a
 
     def render_strategy_inputs(suffix, key_prefix):
         st.subheader(f"📊 {key_prefix} 기본 설정")
@@ -618,9 +625,6 @@ with st.sidebar:
             'tier_weights': edited_w, 'label': key_prefix
         }
 
-    with tab_s: params_s = render_strategy_inputs('s', '🛡️ 안정형')
-    with tab_a: params_a = render_strategy_inputs('a', '🔥 공격형')
-    
     st.markdown("---")
     if st.button("💾 현재 설정 저장하기", type="primary", use_container_width=True, disabled=st.session_state.get("is_running", False)):
         with st.spinner("💾 설정을 저장하는 중..."):
@@ -645,8 +649,6 @@ if sheet_url:
         # 데이터 로드 성공 시 상태 업데이트
         st.session_state.data_loaded = True
         st.session_state.last_update = datetime.datetime.now() + datetime.timedelta(hours=9)
-        tab_dash, tab_lab, tab_mc = st.tabs(["📢 실전 대시보드", "🧪 백테스트 연구소", "🎲 몬테카를로 최적화"])
-
         # --- [탭 1: 실전 대시보드] ---
         with tab_dash:
             last_date_str = df.index[-1].strftime('%Y-%m-%d')
