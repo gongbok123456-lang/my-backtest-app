@@ -17,6 +17,80 @@ DEFAULT_ORDER_URL = "https://docs.google.com/spreadsheets/d/1PpgexM79XVvr23sVfi_
 # --- [페이지 설정] ---
 st.set_page_config(page_title="쪼꼬야옹 백테스트 연구소", page_icon="📈", layout="wide")
 
+# --- [모바일 최적화 CSS] ---
+st.markdown("""
+<style>
+/* 모바일 반응형 레이아웃 */
+@media (max-width: 768px) {
+    /* 컬럼 전체 너비로 */
+    .stColumns {
+        display: flex !important;
+        flex-direction: column !important;
+    }
+    .stColumns > div {
+        width: 100% !important;
+        min-width: unset !important;
+        margin-bottom: 1rem;
+    }
+    
+    /* 버튼 크기 증가 */
+    .stButton > button {
+        padding: 0.75rem 1rem !important;
+        font-size: 1rem !important;
+        min-height: 44px; /* 터치 친화적 */
+    }
+    
+    /* 입력 필드 크기 증가 */
+    .stTextInput input, .stNumberInput input, .stDateInput input, 
+    .stSelectbox select, .stTextArea textarea {
+        font-size: 1rem !important;
+        padding: 0.75rem !important;
+        min-height: 44px !important;
+    }
+    
+    /* 데이터 에디터 테이블 스크롤 */
+    .stDataFrame, .stTable {
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+    }
+    
+    /* 메트릭 카드 조정 */
+    .stMetric {
+        text-align: center !important;
+    }
+    
+    /* 탭 메뉴 크기 */
+    .stTabs [role="tab"] {
+        padding: 0.75rem 1rem !important;
+        font-size: 0.9rem !important;
+    }
+    
+    /* 제목 크기 조정 */
+    h1 { font-size: 1.5rem !important; }
+    h2 { font-size: 1.3rem !important; }
+    h3 { font-size: 1.1rem !important; }
+    
+    /* 간격 줄이기 */
+    .stSpacer {
+        margin: 0.5rem 0 !important;
+    }
+}
+
+/* 태블릿 (769-1024px) */
+@media (min-width: 769px) and (max-width: 1024px) {
+    .stColumns > div {
+        min-width: 45% !important;
+    }
+}
+
+/* 터치 최적화 */
+button, [role="button"], input, select, textarea {
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # --- [세션 상태 초기화] ---
 if 'opt_results' not in st.session_state: st.session_state.opt_results = pd.DataFrame()
 if isinstance(st.session_state.opt_results, list): st.session_state.opt_results = pd.DataFrame(st.session_state.opt_results)
@@ -532,7 +606,7 @@ if sheet_url:
         with tab_dash:
             last_date_str = df.index[-1].strftime('%Y-%m-%d')
             st.header(f"📢 오늘의 투자 브리핑 ({last_date_str})")
-            col_stable, col_agg = st.columns(2)
+            col_stable, col_agg = st.columns([1, 1])
             
             def render_dashboard(col, p_params, strategy_name, stock_name="SOXL"):
                 hts_orders = []
@@ -652,7 +726,7 @@ if sheet_url:
         # --- [탭 2: 백테스트 연구소] ---
         with tab_lab:
             st.info("🧪 여기서는 사이드바 설정과 무관하게 자유롭게 파라미터를 변경하여 테스트할 수 있습니다.")
-            c_lab_in, c_lab_out = st.columns([1.2, 2.8])
+            c_lab_in, c_lab_out = st.columns([1, 1])
             
             with c_lab_in:
                 st.subheader("🛠️ 실험 조건")
@@ -730,7 +804,7 @@ if sheet_url:
             st.subheader("🎲 몬테카를로 시뮬레이션 (전역 최적화)")
             st.caption("바닥/천장 기준, 매수/익절/존버일을 무작위로 조합하여 최적의 값을 찾습니다.")
             
-            c_mc1, c_mc2 = st.columns([1, 2])
+            c_mc1, c_mc2 = st.columns([1, 1])
             with c_mc1:
                 with st.form("mc_form"):
                     mc_trials = st.number_input("1회 시도 횟수", 10, 500, 50)
@@ -855,13 +929,13 @@ if sheet_url:
                         st.success(f"📊 **성과: CAGR {best['CAGR']:.2f}% / MDD {best['MDD']:.2f}%**")
 
                     # 산점도
-                    fig, ax = plt.subplots()
+                    fig, ax = plt.subplots(figsize=(8, 5))
                     sc = ax.scatter(st.session_state.opt_results['MDD'], st.session_state.opt_results['CAGR'], c=st.session_state.opt_results['Score'], cmap='viridis', alpha=0.6)
                     ax.set_xlabel('MDD (%)')
                     ax.set_ylabel('CAGR (%)')
                     ax.set_title('Risk vs Return (Global Optimization)')
                     plt.colorbar(sc, label='Score')
-                    st.pyplot(fig)
+                    st.pyplot(fig, use_container_width=True)
 
 else:
     st.warning("👈 왼쪽 사이드바에 구글 시트 주소를 입력하거나, CSV 파일을 업로드해주세요.")
