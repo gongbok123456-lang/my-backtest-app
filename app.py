@@ -18,139 +18,253 @@ DEFAULT_ORDER_URL = "https://docs.google.com/spreadsheets/d/1PpgexM79XVvr23sVfi_
 # // UI 개선: layout="wide", initial_sidebar_state="expanded"
 st.set_page_config(page_title="쪼꼬야옹 백테스트 연구소", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 
-# --- [UI 개선: 다크 모드 테마 + 액센트 컬러 CSS] ---
+# --- [UI 개선: TradingView 스타일 다크 테마 + 액센트 컬러 CSS] ---
 st.markdown("""
 <style>
-/* ===== 글로벌 테마 ===== */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+/* ===== 글로벌 테마 - TradingView Style ===== */
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Noto+Sans+KR:wght@400;500;700&display=swap');
 :root {
-    --accent-coral: #FF6B6B;
-    --accent-teal: #4ECDC4;
-    --bg-card: rgba(30, 30, 46, 0.65);
-    --bg-card-hover: rgba(40, 40, 60, 0.8);
-    --border-subtle: rgba(255,255,255,0.08);
-    --text-muted: #a0a0b8;
+    /* TradingView Color Palette */
+    --tv-bg-primary: #131722;
+    --tv-bg-secondary: #1E222D;
+    --tv-bg-tertiary: #2A2E39;
+    --tv-accent-blue: #2962FF;
+    --tv-accent-green: #26A69A;
+    --tv-accent-red: #F23645;
+    --tv-accent-yellow: #FF9900;
+    --tv-border: rgba(255, 255, 255, 0.08);
+    --tv-text-primary: #D1D4DC;
+    --tv-text-secondary: #787B86;
 }
 
-/* 메인 영역 기본 폰트 */
-html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+/* 폰트: Roboto (영어/숫자) + Noto Sans KR (한국어) */
+html, body, [class*="css"] {
+    font-family: 'Roboto', 'Noto Sans KR', sans-serif !important;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
 
-/* ===== KPI 메트릭 카드 ===== */
-/* // UI 개선: 메트릭을 카드 스타일로 */
+/* ===== 메인 배경 ===== */
+.stApp {
+    background-color: var(--tv-bg-primary) !important;
+}
+
+/* ===== 사이드바 - TradingView 스타일 ===== */
+section[data-testid="stSidebar"] {
+    background-color: var(--tv-bg-secondary) !important;
+    border-right: 1px solid var(--tv-border) !important;
+}
+section[data-testid="stSidebar"] .stMarkdown h1,
+section[data-testid="stSidebar"] .stMarkdown h2,
+section[data-testid="stSidebar"] .stMarkdown h3 {
+    color: var(--tv-accent-blue) !important;
+    font-weight: 600 !important;
+    margin-top: 1rem !important;
+}
+
+/* ===== KPI 메트릭 카드 - TradingView Style ===== */
 div[data-testid="stMetric"] {
-    background: var(--bg-card);
-    border: 1px solid var(--border-subtle);
-    border-radius: 12px;
-    padding: 14px 18px;
-    box-shadow: 0 2px 12px rgba(0,0,0,0.25);
-    transition: transform 0.15s, box-shadow 0.15s;
+    background-color: var(--tv-bg-secondary) !important;
+    border: 1px solid var(--tv-border) !important;
+    border-radius: 4px !important;
+    padding: 12px 16px !important;
+    transition: border-color 0.2s ease !important;
 }
 div[data-testid="stMetric"]:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 6px 20px rgba(78,205,196,0.15);
+    border-color: var(--tv-accent-blue) !important;
 }
 div[data-testid="stMetric"] label {
-    color: var(--text-muted) !important;
-    font-size: 0.78rem !important;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
+    color: var(--tv-text-secondary) !important;
+    font-size: 0.75rem !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.5px !important;
+    font-weight: 500 !important;
 }
 div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+    color: var(--tv-text-primary) !important;
     font-weight: 700 !important;
-    font-size: 1.35rem !important;
-}
-
-/* ===== 사이드바 스타일 ===== */
-/* // UI 개선: 사이드바 시각적 계층 */
-section[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #1a1a2e 0%, #16213e 100%);
-}
-section[data-testid="stSidebar"] .stMarkdown h2 {
-    color: var(--accent-teal) !important;
-    font-size: 1rem !important;
-    border-bottom: 2px solid var(--accent-teal);
-    padding-bottom: 6px;
-    margin-bottom: 10px;
+    font-size: 1.4rem !important;
+    letter-spacing: -0.5px !important;
 }
 
 /* ===== 탭 스타일 ===== */
-/* // UI 개선: 탭 버튼 스타일 */
 .stTabs [data-baseweb="tab-list"] {
-    gap: 4px;
-    background: var(--bg-card);
-    border-radius: 10px;
-    padding: 4px;
+    background-color: var(--tv-bg-secondary) !important;
+    border-radius: 4px !important;
+    gap: 2px !important;
+    padding: 4px !important;
 }
 .stTabs [data-baseweb="tab"] {
-    border-radius: 8px;
-    padding: 8px 16px;
-    font-weight: 600;
+    border-radius: 3px !important;
+    padding: 8px 12px !important;
+    font-weight: 500 !important;
+    font-size: 0.875rem !important;
+    color: var(--tv-text-secondary) !important;
+    border: none !important;
+}
+.stTabs [data-baseweb="tab"]:hover {
+    background-color: var(--tv-bg-tertiary) !important;
+    color: var(--tv-text-primary) !important;
 }
 .stTabs [aria-selected="true"] {
-    background: linear-gradient(135deg, var(--accent-teal), #45b7aa) !important;
-    color: #fff !important;
+    background-color: var(--tv-bg-tertiary) !important;
+    color: var(--tv-text-primary) !important;
+    border-bottom: 2px solid var(--tv-accent-blue) !important;
 }
 
-/* ===== 매수/매도 주문 컨테이너 ===== */
-/* // UI 개선: 매수 주문 – 틸 강조 */
-.buy-orders-box {
-    border-left: 4px solid var(--accent-teal);
-    background: rgba(78,205,196,0.06);
-    border-radius: 8px;
-    padding: 12px 16px;
-    margin-bottom: 12px;
-}
-/* // UI 개선: 매도 주문 – 코랄 강조 */
-.sell-orders-box {
-    border-left: 4px solid var(--accent-coral);
-    background: rgba(255,107,107,0.06);
-    border-radius: 8px;
-    padding: 12px 16px;
-    margin-bottom: 12px;
-}
-
-/* ===== 프로그레스 바 (시장 상태) ===== */
-/* // UI 개선: 프로그레스 바 색상 */
-.stProgress > div > div > div {
-    background: linear-gradient(90deg, var(--accent-teal), var(--accent-coral));
-}
-
-/* ===== 버튼 ===== */
-/* // UI 개선: 기본 버튼 그래디언트 */
-.stButton > button[kind="primary"] {
-    background: linear-gradient(135deg, var(--accent-coral), #ee5a6f) !important;
+/* ===== 버튼 - TradingView Style (Flat + Clean) ===== */
+.stButton > button {
+    border-radius: 4px !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.3px !important;
+    transition: all 0.15s ease !important;
     border: none !important;
-    font-weight: 700 !important;
-    letter-spacing: 0.3px;
-    transition: transform 0.15s, box-shadow 0.15s;
+}
+.stButton > button[kind="primary"] {
+    background-color: var(--tv-accent-blue) !important;
+    color: #ffffff !important;
+    box-shadow: 0 2px 4px rgba(41, 98, 255, 0.2) !important;
 }
 .stButton > button[kind="primary"]:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 4px 16px rgba(255,107,107,0.35) !important;
+    background-color: #1E53D6 !important;
+    box-shadow: 0 4px 12px rgba(41, 98, 255, 0.3) !important;
+}
+.stButton > button:not([kind="primary"]) {
+    background-color: var(--tv-bg-tertiary) !important;
+    color: var(--tv-text-primary) !important;
+    border: 1px solid var(--tv-border) !important;
+}
+.stButton > button:not([kind="primary"]):hover {
+    background-color: #363A45 !important;
+    border-color: var(--tv-text-secondary) !important;
+}
+
+/* ===== 입력 필드 ===== */
+.stTextInput input, .stNumberInput input, .stDateInput input,
+.stSelectbox select, .stTextArea textarea {
+    background-color: var(--tv-bg-secondary) !important;
+    border: 1px solid var(--tv-border) !important;
+    border-radius: 4px !important;
+    color: var(--tv-text-primary) !important;
+    padding: 0.6rem 0.8rem !important;
+    font-size: 0.875rem !important;
+}
+.stTextInput input:focus, .stNumberInput input:focus, .stDateInput input:focus,
+.stSelectbox select:focus, .stTextArea textarea:focus {
+    border-color: var(--tv-accent-blue) !important;
+}
+
+/* ===== 데이터 에디터/테이블 ===== */
+.stDataFrame, .stTable {
+    background-color: var(--tv-bg-secondary) !important;
+    border: 1px solid var(--tv-border) !important;
+    border-radius: 4px !important;
+}
+.stDataFrame table, .stTable table {
+    color: var(--tv-text-primary) !important;
+    font-size: 0.875rem !important;
+}
+.stDataFrame th, .stTable th {
+    background-color: var(--tv-bg-tertiary) !important;
+    color: var(--tv-text-secondary) !important;
+    font-weight: 600 !important;
+    border-bottom: 1px solid var(--tv-border) !important;
+}
+
+/* ===== 주문 컨테이너 - TradingView Style ===== */
+.buy-orders-box {
+    border-left: 3px solid var(--tv-accent-green) !important;
+    background: rgba(38, 166, 154, 0.05) !important;
+    border-radius: 4px !important;
+    padding: 16px !important;
+    margin-bottom: 12px !important;
+}
+.sell-orders-box {
+    border-left: 3px solid var(--tv-accent-red) !important;
+    background: rgba(242, 54, 69, 0.05) !important;
+    border-radius: 4px !important;
+    padding: 16px !important;
+    margin-bottom: 12px !important;
+}
+
+/* ===== 프로그레스 바 ===== */
+.stProgress > div > div > div {
+    background-color: var(--tv-accent-blue) !important;
+    border-radius: 2px !important;
+}
+.stProgress > div > div {
+    background-color: var(--tv-bg-tertiary) !important;
+    border-radius: 2px !important;
+}
+
+/* ===== Expander ===== */
+.streamlit-expanderHeader {
+    background-color: var(--tv-bg-secondary) !important;
+    border: 1px solid var(--tv-border) !important;
+    border-radius: 4px !important;
+    color: var(--tv-text-primary) !important;
+    font-weight: 500 !important;
+}
+.streamlit-expanderContent {
+    background-color: var(--tv-bg-secondary) !important;
+    border: 1px solid var(--tv-border) !important;
+    border-top: none !important;
+    border-radius: 0 0 4px 4px !important;
+    padding: 12px !important;
+}
+
+/* ===== Info/Warning/Error 박스 ===== */
+.stInfo {
+    background-color: rgba(41, 98, 255, 0.1) !important;
+    border: 1px solid rgba(41, 98, 255, 0.2) !important;
+    border-radius: 4px !important;
+}
+.stWarning {
+    background-color: rgba(255, 153, 0, 0.1) !important;
+    border: 1px solid rgba(255, 153, 0, 0.2) !important;
+    border-radius: 4px !important;
+}
+.stError {
+    background-color: rgba(242, 54, 69, 0.1) !important;
+    border: 1px solid rgba(242, 54, 69, 0.2) !important;
+    border-radius: 4px !important;
 }
 
 /* ===== 구분선 ===== */
-hr { border-color: var(--border-subtle) !important; }
+hr {
+    border-color: var(--tv-border) !important;
+    margin: 1.5rem 0 !important;
+}
+
+/* ===== 캡션 ===== */
+.stCaption {
+    color: var(--tv-text-secondary) !important;
+    font-size: 0.75rem !important;
+}
 
 /* ===== 반응형 ===== */
 @media (max-width: 768px) {
     .stColumns { display: flex !important; flex-direction: column !important; }
-    .stColumns > div { width: 100% !important; min-width: unset !important; margin-bottom: 0.8rem; }
-    .stButton > button { padding: 0.75rem 1rem !important; font-size: 1rem !important; min-height: 44px; }
+    .stColumns > div { width: 100% !important; min-width: unset !important; margin-bottom: 0.6rem !important; }
+    .stButton > button { padding: 0.75rem 1rem !important; font-size: 0.95rem !important; min-height: 44px !important; }
     .stTextInput input, .stNumberInput input, .stDateInput input,
     .stSelectbox select, .stTextArea textarea {
-        font-size: 1rem !important; padding: 0.75rem !important; min-height: 44px !important;
+        font-size: 0.95rem !important; padding: 0.75rem !important; min-height: 44px !important;
     }
     .stDataFrame, .stTable { overflow-x: auto !important; -webkit-overflow-scrolling: touch !important; }
     div[data-testid="stMetric"] { text-align: center !important; }
     .stTabs [role="tab"] { padding: 0.6rem 0.8rem !important; font-size: 0.85rem !important; }
-    h1 { font-size: 1.5rem !important; } h2 { font-size: 1.25rem !important; } h3 { font-size: 1.05rem !important; }
+    h1 { font-size: 1.4rem !important; } h2 { font-size: 1.2rem !important; } h3 { font-size: 1.05rem !important; }
+    .streamlit-expanderHeader { font-size: 0.9rem !important; }
 }
 @media (min-width: 769px) and (max-width: 1024px) {
     .stColumns > div { min-width: 45% !important; }
 }
+
+/* ===== 터치 최적화 ===== */
 button, [role="button"], input, select, textarea {
-    touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -886,9 +1000,9 @@ if sheet_url:
                             m3.metric("CAGR", f"{res_lab['CAGR']:.2f}%")
                             m4.metric("MDD", f"{res_lab['MDD']:.2f}%")
                             m5.metric("승률", f"{res_lab['WinRate']}%")
-                        # // UI 개선: 차트 색상을 액센트 틸로 변경
+                        # // UI 개선: 차트 색상을 TradingView 스타일 블루(#2962FF)로 변경
                         st.subheader("📈 자산 추이")
-                        st.line_chart(res_lab['Series'], color="#4ECDC4")
+                        st.line_chart(res_lab['Series'], color="#2962FF")
                         st.subheader("📜 매매 기록")
                         st.dataframe(res_lab['TradeLog'], use_container_width=True, height=400)
 
