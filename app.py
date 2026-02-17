@@ -620,14 +620,29 @@ def backtest_engine_5mode(df, params):
 
     dates = df.index
 
-    # ===== 모드 설정 =====
+    # ===== 모드 설정 ===== - // NEW: 5모드 모드별 UI 커스텀
     # 5모드 파라미터 (MA 이격도용)
     mode_config = {
-        'PANIC_BOTTOM': {'buy': 20.0,  'prof': 0.04,  'time': 8,  'weight_factor': 1.5},
-        'BOTTOM':       {'buy': params['bt_buy'], 'prof': params['bt_prof'], 'time': params['bt_time'], 'weight_factor': 1.2},
-        'NEUTRAL':      {'buy': params['md_buy'], 'prof': params['md_prof'], 'time': params['md_time'], 'weight_factor': 1.0},
-        'BEARISH':      {'buy': max(params['md_buy'], -0.5), 'prof': max(params['md_prof'], 0.02), 'time': min(params['md_time'], 25), 'weight_factor': 0.7},
-        'CEILING':      {'buy': params['cl_buy'], 'prof': params['cl_prof'], 'time': params['cl_time'], 'weight_factor': 0.5},
+        'PANIC_BOTTOM': {
+            'buy': params.get('panic_buy', 20.0),
+            'prof': params.get('panic_prof', 0.04),
+            'time': params.get('panic_time', 8),
+            'weight_factor': params.get('panic_wf', 1.5)
+        },
+        'BOTTOM': {'buy': params['bt_buy'], 'prof': params['bt_prof'], 'time': params['bt_time'], 'weight_factor': params.get('bot_wf', 1.2)},
+        'NEUTRAL': {'buy': params['md_buy'], 'prof': params['md_prof'], 'time': params['md_time'], 'weight_factor': params.get('neut_wf', 1.0)},
+        'BEARISH': {
+            'buy': params.get('bear_buy', max(params['md_buy'], -0.5)),
+            'prof': params.get('bear_prof', max(params['md_prof'], 0.02)),
+            'time': params.get('bear_time', min(params['md_time'], 25)),
+            'weight_factor': params.get('bear_wf', 0.7)
+        },
+        'CEILING': {
+            'buy': params.get('ceil_buy', params['cl_buy']),
+            'prof': params.get('ceil_prof', params['cl_prof']),
+            'time': params.get('ceil_time', params['cl_time']),
+            'weight_factor': params.get('ceil_wf', 0.5)
+        },
         # 3모드 (RSI/다이버전스용)
         'Bottom':  {'buy': params['bt_buy'], 'prof': params['bt_prof'], 'time': params['bt_time'], 'weight_factor': 1.0},
         'Middle':  {'buy': params['md_buy'], 'prof': params['md_prof'], 'time': params['md_time'], 'weight_factor': 1.0},
@@ -1295,11 +1310,36 @@ if sheet_url:
                     with st.expander("🪡 MDD 패치 옵션", expanded=False):
                         lab_use_5mode = st.checkbox("✅ 5모드 엔진 사용 (MA 이격도 전용)", value=False)
                         lab_compare_5m = st.checkbox("⚔️ 기존 3모드 vs 패치 비교", value=True)
-                        lab_trailing = st.number_input("🛑 트레일링 스탑 (%)", 0.0, 100.0, 20.0, step=1.0) / 100  # // NEW: max 100%, default 20%
+                        lab_trailing = st.number_input("🛑 트레일링 스탑 (%)", 0.0, 100.0, 20.0, step=1.0) / 100
 
-                    # // NEW: 5모드 커스텀 설정
-                    with st.expander("🆕 5모드 커스텀 설정", expanded=False):
-                        st.caption("ℹ️ 5모드 ON 시에만 적용. 기본값 = 엔진 하드코드.")
+                    # // NEW: 5모드 모드별 UI 커스텀
+                    with st.expander("🆕 5모드 상세 설정", expanded=False):
+                        st.caption("ℹ️ 5모드 ON 시에만 적용. BOTTOM/NEUTRAL은 위의 바닥/중간 설정 재사용.")
+                        st.markdown("**🟥 PANIC_BOTTOM** (급락 바닥 급매수)")
+                        pc1, pc2, pc3 = st.columns(3)
+                        lab_panic_buy = pc1.number_input("매수점%", -25.0, 0.0, -20.0, step=1.0, key="panic_buy")
+                        lab_panic_prof = pc2.number_input("익절%", 3.0, 6.0, 4.0, step=0.1, key="panic_prof")
+                        lab_panic_time = pc3.number_input("존버일", 5, 12, 8, step=1, key="panic_time")
+                        st.markdown("**🟡 BEARISH** (하락 전환 구간)")
+                        bc1, bc2, bc3 = st.columns(3)
+                        lab_bear_buy = bc1.number_input("매수점%", -1.0, 0.0, max(l_mb, -0.5), step=0.1, key="bear_buy")
+                        lab_bear_prof = bc2.number_input("익절%", 1.5, 3.0, max(l_mp, 2.0), step=0.1, key="bear_prof")
+                        lab_bear_time = bc3.number_input("존버일", 20, 35, min(l_mt, 25), step=1, key="bear_time")
+                        st.markdown("**🟠 CEILING** (천장 구간)")
+                        cc1, cc2, cc3 = st.columns(3)
+                        lab_ceil_buy = cc1.number_input("매수점%", -0.5, 0.0, l_cb, step=0.1, key="ceil_buy")
+                        lab_ceil_prof = cc2.number_input("익절%", 1.0, 2.5, l_cp, step=0.1, key="ceil_prof")
+                        lab_ceil_time = cc3.number_input("존버일", 30, 50, l_ct, step=1, key="ceil_time")
+                        st.markdown("---")
+                        st.markdown("**⚖️ Weight Factor** (고정)")
+                        wfc1, wfc2, wfc3, wfc4, wfc5 = st.columns(5)
+                        wfc1.metric("PANIC", "1.5x")
+                        wfc2.metric("BOTTOM", "1.2x")
+                        wfc3.metric("NEUTRAL", "1.0x")
+                        wfc4.metric("BEARISH", "0.7x")
+                        wfc5.metric("CEILING", "0.5x")
+                        st.markdown("---")
+                        st.markdown("**🎯 모드 분류 Threshold**")
                         fm_c1, fm_c2 = st.columns(2)
                         lab_panic_disp = fm_c1.number_input("🟥 PANIC 이격도 (<)", value=0.82, step=0.01, format="%.2f")
                         lab_panic_rsi = fm_c2.number_input("🟥 PANIC RSI (<)", value=25.0, step=1.0)
@@ -1324,7 +1364,11 @@ if sheet_url:
                         'cl_cond': l_cc, 'cl_buy': l_cb, 'cl_prof': l_cp/100, 'cl_time': l_ct,
                         'tier_weights': lab_weights,
                         'trailing_pct': lab_trailing, 'use_5mode': lab_use_5mode,
-                        # // NEW: 5모드 커스텀 threshold
+                        # // NEW: 5모드 모드별 커스텀 (매수/익절/존버일)
+                        'panic_buy': lab_panic_buy, 'panic_prof': lab_panic_prof/100, 'panic_time': lab_panic_time,
+                        'bear_buy': lab_bear_buy, 'bear_prof': lab_bear_prof/100, 'bear_time': lab_bear_time,
+                        'ceil_buy': lab_ceil_buy, 'ceil_prof': lab_ceil_prof/100, 'ceil_time': lab_ceil_time,
+                        # // NEW: 5모드 분류 threshold
                         'panic_disp_th': lab_panic_disp, 'panic_rsi_th': lab_panic_rsi, 'panic_bb_th': lab_panic_bb,
                         'bear_rsi_th': lab_bear_rsi, 'bear_disp_th': lab_bear_disp,
                         'ceil_rsi_th': lab_ceil_rsi, 'bot_rsi_th': lab_bot_rsi
