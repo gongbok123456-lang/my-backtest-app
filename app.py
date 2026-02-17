@@ -18,253 +18,139 @@ DEFAULT_ORDER_URL = "https://docs.google.com/spreadsheets/d/1PpgexM79XVvr23sVfi_
 # // UI 개선: layout="wide", initial_sidebar_state="expanded"
 st.set_page_config(page_title="쪼꼬야옹 백테스트 연구소", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 
-# --- [UI 개선: TradingView 스타일 다크 테마 + 액센트 컬러 CSS] ---
+# --- [UI 개선: 다크 모드 테마 + 액센트 컬러 CSS] ---
 st.markdown("""
 <style>
-/* ===== 글로벌 테마 - TradingView Style ===== */
-@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Noto+Sans+KR:wght@400;500;700&display=swap');
+/* ===== 글로벌 테마 ===== */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 :root {
-    /* TradingView Color Palette */
-    --tv-bg-primary: #131722;
-    --tv-bg-secondary: #1E222D;
-    --tv-bg-tertiary: #2A2E39;
-    --tv-accent-blue: #2962FF;
-    --tv-accent-green: #26A69A;
-    --tv-accent-red: #F23645;
-    --tv-accent-yellow: #FF9900;
-    --tv-border: rgba(255, 255, 255, 0.08);
-    --tv-text-primary: #D1D4DC;
-    --tv-text-secondary: #787B86;
+    --accent-coral: #FF6B6B;
+    --accent-teal: #4ECDC4;
+    --bg-card: rgba(30, 30, 46, 0.65);
+    --bg-card-hover: rgba(40, 40, 60, 0.8);
+    --border-subtle: rgba(255,255,255,0.08);
+    --text-muted: #a0a0b8;
 }
 
-/* 폰트: Roboto (영어/숫자) + Noto Sans KR (한국어) */
-html, body, [class*="css"] {
-    font-family: 'Roboto', 'Noto Sans KR', sans-serif !important;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-}
+/* 메인 영역 기본 폰트 */
+html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 
-/* ===== 메인 배경 ===== */
-.stApp {
-    background-color: var(--tv-bg-primary) !important;
-}
-
-/* ===== 사이드바 - TradingView 스타일 ===== */
-section[data-testid="stSidebar"] {
-    background-color: var(--tv-bg-secondary) !important;
-    border-right: 1px solid var(--tv-border) !important;
-}
-section[data-testid="stSidebar"] .stMarkdown h1,
-section[data-testid="stSidebar"] .stMarkdown h2,
-section[data-testid="stSidebar"] .stMarkdown h3 {
-    color: var(--tv-accent-blue) !important;
-    font-weight: 600 !important;
-    margin-top: 1rem !important;
-}
-
-/* ===== KPI 메트릭 카드 - TradingView Style ===== */
+/* ===== KPI 메트릭 카드 ===== */
+/* // UI 개선: 메트릭을 카드 스타일로 */
 div[data-testid="stMetric"] {
-    background-color: var(--tv-bg-secondary) !important;
-    border: 1px solid var(--tv-border) !important;
-    border-radius: 4px !important;
-    padding: 12px 16px !important;
-    transition: border-color 0.2s ease !important;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: 12px;
+    padding: 14px 18px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.25);
+    transition: transform 0.15s, box-shadow 0.15s;
 }
 div[data-testid="stMetric"]:hover {
-    border-color: var(--tv-accent-blue) !important;
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(78,205,196,0.15);
 }
 div[data-testid="stMetric"] label {
-    color: var(--tv-text-secondary) !important;
-    font-size: 0.75rem !important;
-    text-transform: uppercase !important;
-    letter-spacing: 0.5px !important;
-    font-weight: 500 !important;
+    color: var(--text-muted) !important;
+    font-size: 0.78rem !important;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
 }
 div[data-testid="stMetric"] [data-testid="stMetricValue"] {
-    color: var(--tv-text-primary) !important;
     font-weight: 700 !important;
-    font-size: 1.4rem !important;
-    letter-spacing: -0.5px !important;
+    font-size: 1.35rem !important;
+}
+
+/* ===== 사이드바 스타일 ===== */
+/* // UI 개선: 사이드바 시각적 계층 */
+section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #1a1a2e 0%, #16213e 100%);
+}
+section[data-testid="stSidebar"] .stMarkdown h2 {
+    color: var(--accent-teal) !important;
+    font-size: 1rem !important;
+    border-bottom: 2px solid var(--accent-teal);
+    padding-bottom: 6px;
+    margin-bottom: 10px;
 }
 
 /* ===== 탭 스타일 ===== */
+/* // UI 개선: 탭 버튼 스타일 */
 .stTabs [data-baseweb="tab-list"] {
-    background-color: var(--tv-bg-secondary) !important;
-    border-radius: 4px !important;
-    gap: 2px !important;
-    padding: 4px !important;
+    gap: 4px;
+    background: var(--bg-card);
+    border-radius: 10px;
+    padding: 4px;
 }
 .stTabs [data-baseweb="tab"] {
-    border-radius: 3px !important;
-    padding: 8px 12px !important;
-    font-weight: 500 !important;
-    font-size: 0.875rem !important;
-    color: var(--tv-text-secondary) !important;
-    border: none !important;
-}
-.stTabs [data-baseweb="tab"]:hover {
-    background-color: var(--tv-bg-tertiary) !important;
-    color: var(--tv-text-primary) !important;
+    border-radius: 8px;
+    padding: 8px 16px;
+    font-weight: 600;
 }
 .stTabs [aria-selected="true"] {
-    background-color: var(--tv-bg-tertiary) !important;
-    color: var(--tv-text-primary) !important;
-    border-bottom: 2px solid var(--tv-accent-blue) !important;
+    background: linear-gradient(135deg, var(--accent-teal), #45b7aa) !important;
+    color: #fff !important;
 }
 
-/* ===== 버튼 - TradingView Style (Flat + Clean) ===== */
-.stButton > button {
-    border-radius: 4px !important;
-    font-weight: 600 !important;
-    letter-spacing: 0.3px !important;
-    transition: all 0.15s ease !important;
-    border: none !important;
+/* ===== 매수/매도 주문 컨테이너 ===== */
+/* // UI 개선: 매수 주문 – 틸 강조 */
+.buy-orders-box {
+    border-left: 4px solid var(--accent-teal);
+    background: rgba(78,205,196,0.06);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 12px;
 }
+/* // UI 개선: 매도 주문 – 코랄 강조 */
+.sell-orders-box {
+    border-left: 4px solid var(--accent-coral);
+    background: rgba(255,107,107,0.06);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 12px;
+}
+
+/* ===== 프로그레스 바 (시장 상태) ===== */
+/* // UI 개선: 프로그레스 바 색상 */
+.stProgress > div > div > div {
+    background: linear-gradient(90deg, var(--accent-teal), var(--accent-coral));
+}
+
+/* ===== 버튼 ===== */
+/* // UI 개선: 기본 버튼 그래디언트 */
 .stButton > button[kind="primary"] {
-    background-color: var(--tv-accent-blue) !important;
-    color: #ffffff !important;
-    box-shadow: 0 2px 4px rgba(41, 98, 255, 0.2) !important;
+    background: linear-gradient(135deg, var(--accent-coral), #ee5a6f) !important;
+    border: none !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.3px;
+    transition: transform 0.15s, box-shadow 0.15s;
 }
 .stButton > button[kind="primary"]:hover {
-    background-color: #1E53D6 !important;
-    box-shadow: 0 4px 12px rgba(41, 98, 255, 0.3) !important;
-}
-.stButton > button:not([kind="primary"]) {
-    background-color: var(--tv-bg-tertiary) !important;
-    color: var(--tv-text-primary) !important;
-    border: 1px solid var(--tv-border) !important;
-}
-.stButton > button:not([kind="primary"]):hover {
-    background-color: #363A45 !important;
-    border-color: var(--tv-text-secondary) !important;
-}
-
-/* ===== 입력 필드 ===== */
-.stTextInput input, .stNumberInput input, .stDateInput input,
-.stSelectbox select, .stTextArea textarea {
-    background-color: var(--tv-bg-secondary) !important;
-    border: 1px solid var(--tv-border) !important;
-    border-radius: 4px !important;
-    color: var(--tv-text-primary) !important;
-    padding: 0.6rem 0.8rem !important;
-    font-size: 0.875rem !important;
-}
-.stTextInput input:focus, .stNumberInput input:focus, .stDateInput input:focus,
-.stSelectbox select:focus, .stTextArea textarea:focus {
-    border-color: var(--tv-accent-blue) !important;
-}
-
-/* ===== 데이터 에디터/테이블 ===== */
-.stDataFrame, .stTable {
-    background-color: var(--tv-bg-secondary) !important;
-    border: 1px solid var(--tv-border) !important;
-    border-radius: 4px !important;
-}
-.stDataFrame table, .stTable table {
-    color: var(--tv-text-primary) !important;
-    font-size: 0.875rem !important;
-}
-.stDataFrame th, .stTable th {
-    background-color: var(--tv-bg-tertiary) !important;
-    color: var(--tv-text-secondary) !important;
-    font-weight: 600 !important;
-    border-bottom: 1px solid var(--tv-border) !important;
-}
-
-/* ===== 주문 컨테이너 - TradingView Style ===== */
-.buy-orders-box {
-    border-left: 3px solid var(--tv-accent-green) !important;
-    background: rgba(38, 166, 154, 0.05) !important;
-    border-radius: 4px !important;
-    padding: 16px !important;
-    margin-bottom: 12px !important;
-}
-.sell-orders-box {
-    border-left: 3px solid var(--tv-accent-red) !important;
-    background: rgba(242, 54, 69, 0.05) !important;
-    border-radius: 4px !important;
-    padding: 16px !important;
-    margin-bottom: 12px !important;
-}
-
-/* ===== 프로그레스 바 ===== */
-.stProgress > div > div > div {
-    background-color: var(--tv-accent-blue) !important;
-    border-radius: 2px !important;
-}
-.stProgress > div > div {
-    background-color: var(--tv-bg-tertiary) !important;
-    border-radius: 2px !important;
-}
-
-/* ===== Expander ===== */
-.streamlit-expanderHeader {
-    background-color: var(--tv-bg-secondary) !important;
-    border: 1px solid var(--tv-border) !important;
-    border-radius: 4px !important;
-    color: var(--tv-text-primary) !important;
-    font-weight: 500 !important;
-}
-.streamlit-expanderContent {
-    background-color: var(--tv-bg-secondary) !important;
-    border: 1px solid var(--tv-border) !important;
-    border-top: none !important;
-    border-radius: 0 0 4px 4px !important;
-    padding: 12px !important;
-}
-
-/* ===== Info/Warning/Error 박스 ===== */
-.stInfo {
-    background-color: rgba(41, 98, 255, 0.1) !important;
-    border: 1px solid rgba(41, 98, 255, 0.2) !important;
-    border-radius: 4px !important;
-}
-.stWarning {
-    background-color: rgba(255, 153, 0, 0.1) !important;
-    border: 1px solid rgba(255, 153, 0, 0.2) !important;
-    border-radius: 4px !important;
-}
-.stError {
-    background-color: rgba(242, 54, 69, 0.1) !important;
-    border: 1px solid rgba(242, 54, 69, 0.2) !important;
-    border-radius: 4px !important;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(255,107,107,0.35) !important;
 }
 
 /* ===== 구분선 ===== */
-hr {
-    border-color: var(--tv-border) !important;
-    margin: 1.5rem 0 !important;
-}
-
-/* ===== 캡션 ===== */
-.stCaption {
-    color: var(--tv-text-secondary) !important;
-    font-size: 0.75rem !important;
-}
+hr { border-color: var(--border-subtle) !important; }
 
 /* ===== 반응형 ===== */
 @media (max-width: 768px) {
     .stColumns { display: flex !important; flex-direction: column !important; }
-    .stColumns > div { width: 100% !important; min-width: unset !important; margin-bottom: 0.6rem !important; }
-    .stButton > button { padding: 0.75rem 1rem !important; font-size: 0.95rem !important; min-height: 44px !important; }
+    .stColumns > div { width: 100% !important; min-width: unset !important; margin-bottom: 0.8rem; }
+    .stButton > button { padding: 0.75rem 1rem !important; font-size: 1rem !important; min-height: 44px; }
     .stTextInput input, .stNumberInput input, .stDateInput input,
     .stSelectbox select, .stTextArea textarea {
-        font-size: 0.95rem !important; padding: 0.75rem !important; min-height: 44px !important;
+        font-size: 1rem !important; padding: 0.75rem !important; min-height: 44px !important;
     }
     .stDataFrame, .stTable { overflow-x: auto !important; -webkit-overflow-scrolling: touch !important; }
     div[data-testid="stMetric"] { text-align: center !important; }
     .stTabs [role="tab"] { padding: 0.6rem 0.8rem !important; font-size: 0.85rem !important; }
-    h1 { font-size: 1.4rem !important; } h2 { font-size: 1.2rem !important; } h3 { font-size: 1.05rem !important; }
-    .streamlit-expanderHeader { font-size: 0.9rem !important; }
+    h1 { font-size: 1.5rem !important; } h2 { font-size: 1.25rem !important; } h3 { font-size: 1.05rem !important; }
 }
 @media (min-width: 769px) and (max-width: 1024px) {
     .stColumns > div { min-width: 45% !important; }
 }
-
-/* ===== 터치 최적화 ===== */
 button, [role="button"], input, select, textarea {
-    touch-action: manipulation;
-    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation; -webkit-tap-highlight-color: transparent;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -662,6 +548,238 @@ def backtest_engine_web(df, params):
 	    'CurrentHoldings': holdings, 'LastData': df.iloc[-1]
     }
 
+# --- [UPGRADE] 헬퍼: Sigmoid 보간 ---
+def sigmoid_interpolate(val, low_bound, high_bound, low_out, high_out, steepness=15.0):
+    """S자 곡선으로 low_out ↔ high_out 사이를 연속 보간. val이 low_bound 근처→low_out, high_bound 근처→high_out."""
+    if high_bound == low_bound: return (low_out + high_out) / 2.0
+    mid = (low_bound + high_bound) / 2.0
+    scale = 2.0 / (high_bound - low_bound)
+    x = (val - mid) * scale * steepness
+    sig = 1.0 / (1.0 + np.exp(-np.clip(x, -500, 500)))
+    return low_out + (high_out - low_out) * sig
+
+# --- [UPGRADE] 업그레이드 백테스트 엔진 ---
+def backtest_engine_upgraded(df, params):
+    """
+    backtest_engine_web + 3가지 업그레이드:
+    1. 동적 Threshold (rolling mean±std, shift(1))
+    2. Sigmoid 연속 매수 비중
+    3. ADR + 모멘텀 프록시 필터
+    출력 형식 동일 → UI 호환.
+    """
+    df = df.copy()
+    df['QQQ'] = pd.to_numeric(df['QQQ'], errors='coerce')
+    ma_win = int(params['ma_window'])
+    
+    # 기존 지표 (동일)
+    df['MA_Daily'] = df['QQQ'].rolling(window=ma_win, min_periods=1).mean()
+    df['Log_Start_Price'] = df['QQQ'].shift(ma_win - 1)
+    delta = df['SOXL'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    df['RSI'] = 100 - (100 / (1 + rs))
+    df['Low_10'] = df['SOXL'].rolling(window=10).min()
+    df['Bullish_Div'] = (df['SOXL'] == df['Low_10']) & (df['RSI'] > df['RSI'].shift(1)) & (df['RSI'] < 45)
+    df['BB_MA20'] = df['SOXL'].rolling(window=20).mean()
+    df['BB_STD20'] = df['SOXL'].rolling(window=20).std()
+    df['BB_Upper'] = df['BB_MA20'] + (2 * df['BB_STD20'])
+
+    weekly_resampled = df[['QQQ', 'MA_Daily', 'Log_Start_Price']].resample('W-FRI').last()
+    weekly_resampled.columns = ['QQQ_Fri', 'MA_Fri', 'Start_Price_Fri']
+    weekly_resampled['Disp_Fri'] = weekly_resampled['QQQ_Fri'] / weekly_resampled['MA_Fri']
+    daily_expanded = weekly_resampled.resample('D').ffill()
+    daily_shifted = daily_expanded.shift(1)
+    df_mapped = daily_shifted.reindex(df.index)
+    df['Basis_Disp'] = df_mapped['Disp_Fri'].fillna(1.0)
+    df['Log_Ref_Date'] = daily_shifted['QQQ_Fri'].reindex(df.index).index
+    df['Prev_Close'] = df['SOXL'].shift(1)
+
+    # [UPGRADE 1] 동적 Threshold
+    dyn_win = int(params.get('dyn_window', 60))
+    dyn_std_mult = float(params.get('dyn_std_mult', 1.5))
+    disp_ma = df['Basis_Disp'].rolling(window=dyn_win, min_periods=max(20, dyn_win//3)).mean().shift(1)
+    disp_std = df['Basis_Disp'].rolling(window=dyn_win, min_periods=max(20, dyn_win//3)).std().shift(1)
+    df['Dyn_Bottom'] = disp_ma - dyn_std_mult * disp_std
+    df['Dyn_Ceiling'] = disp_ma + dyn_std_mult * disp_std
+
+    # [UPGRADE 3] ADR
+    adr_win = int(params.get('adr_window', 20))
+    df['ADR'] = df['SOXL'].pct_change().abs().rolling(window=adr_win, min_periods=5).mean() * 100
+
+    # [UPGRADE 3] 모멘텀 프록시 (OBV 대체)
+    momentum_win = int(params.get('momentum_window', 20))
+    price_dir = np.where(df['SOXL'] > df['SOXL'].shift(1), 1.0, np.where(df['SOXL'] < df['SOXL'].shift(1), -1.0, 0.0))
+    df['Mom_Proxy'] = pd.Series(price_dir, index=df.index).cumsum()
+    df['Mom_MA'] = df['Mom_Proxy'].rolling(window=momentum_win, min_periods=5).mean()
+
+    # 기간 필터
+    start_dt = pd.to_datetime(params['start_date'])
+    end_dt = pd.to_datetime(params['end_date'])
+    df = df.sort_index()
+    df = df[(df.index >= start_dt) & (df.index <= end_dt + pd.Timedelta(days=1))].copy()
+    df = df.dropna(subset=['SOXL'])
+    if len(df) == 0: return None
+
+    dates = df.index
+    strategy = {
+        'Bottom':  {'cond': params['bt_cond'], 'buy': params['bt_buy'], 'prof': params['bt_prof'], 'time': params['bt_time']},
+        'Ceiling': {'cond': params['cl_cond'], 'buy': params['cl_buy'], 'prof': params['cl_prof'], 'time': params['cl_time']},
+        'Middle':  {'cond': 999, 'buy': params['md_buy'], 'prof': params['md_prof'], 'time': params['md_time']}
+    }
+    use_dyn = params.get('use_dynamic_thresh', True)
+    use_sig = params.get('use_sigmoid', True)
+    use_adr = params.get('use_adr_filter', True)
+    adr_threshold = float(params.get('adr_threshold', 3.5))
+    sig_steep = float(params.get('sigmoid_steepness', 15.0))
+
+    cash = params['initial_balance']; seed_equity = cash
+    holdings = []; trade_log = []; daily_log = []; daily_equity = []; daily_dates = []
+    trade_count = 0; win_count = 0; MAX_SLOTS = 10; SEC_FEE = 0.0000278
+
+    for i in range(len(df)):
+        row = df.iloc[i]; today_close = row['SOXL']
+        if pd.isna(today_close) or today_close <= 0: continue
+        if params.get('force_round', True): today_close = round(today_close, 2)
+        start_cash = cash
+        strat_type = params.get('strategy_type', 'MA 이격도')
+        current_disp = row['Basis_Disp'] if not pd.isna(row['Basis_Disp']) else 1.0
+        current_rsi = row['RSI'] if not pd.isna(row['RSI']) else 50.0
+        is_div = row['Bullish_Div']
+
+        # [UPGRADE 1] 동적 vs 고정 threshold
+        if use_dyn and strat_type == 'MA 이격도':
+            dyn_bt = row['Dyn_Bottom'] if not pd.isna(row.get('Dyn_Bottom', np.nan)) else params['bt_cond']
+            dyn_cl = row['Dyn_Ceiling'] if not pd.isna(row.get('Dyn_Ceiling', np.nan)) else params['cl_cond']
+        else:
+            dyn_bt = params['bt_cond']; dyn_cl = params['cl_cond']
+
+        if strat_type == 'RSI':
+            if current_rsi < dyn_bt: phase = 'Bottom'
+            elif current_rsi > dyn_cl: phase = 'Ceiling'
+            else: phase = 'Middle'
+            disp_val = current_rsi
+        elif strat_type == 'RSI 다이버전스':
+            if is_div: phase = 'Bottom'
+            elif current_rsi > dyn_cl: phase = 'Ceiling'
+            else: phase = 'Middle'
+            disp_val = current_rsi
+        else:
+            if current_disp < dyn_bt: phase = 'Bottom'
+            elif current_disp > dyn_cl: phase = 'Ceiling'
+            else: phase = 'Middle'
+            disp_val = current_disp
+
+        conf = strategy[phase]; tiers_sold = set(); daily_net_profit_sum = 0
+
+        # 매도 로직 (기존 동일)
+        for stock in holdings[:]:
+            buy_p, days, qty, mode, tier, buy_dt = stock
+            s_conf = strategy[mode]; days += 1
+            target_p = excel_round_up(buy_p * (1 + s_conf['prof']), 2)
+            is_sold = False; reason = ""
+            if days >= s_conf['time']: is_sold = True; reason = f"TimeCut({days}d)"
+            elif today_close >= target_p:
+                if params.get('use_bb_walk', False) and today_close > row['BB_Upper']: is_sold = False
+                else: is_sold = True; reason = "Profit"
+            if is_sold:
+                holdings.remove(stock); tiers_sold.add(tier)
+                sell_amt = today_close * qty; sec_fee_val = round(sell_amt * SEC_FEE, 2)
+                net_receive = sell_amt * (1 - params['fee_rate']) - sec_fee_val
+                buy_cost = (buy_p * qty) * (1 + params['fee_rate'])
+                real_profit = round(net_receive - buy_cost, 2)
+                daily_net_profit_sum += real_profit; cash += net_receive
+                trade_count += 1
+                if real_profit > 0: win_count += 1
+                trade_log.append({'Date': dates[i], 'Type': 'Sell', 'Tier': tier, 'Phase': mode, 'Ref_Date': '-', 'Disp': disp_val, 'Price': today_close, 'Qty': qty, 'Profit': real_profit, 'Reason': reason})
+            else: stock[1] = days
+
+        # [UPGRADE 2] Sigmoid 연속 매수 비중
+        if use_sig and strat_type == 'MA 이격도':
+            sig_buy_pct = sigmoid_interpolate(current_disp, dyn_bt, dyn_cl, params['bt_buy'], params['cl_buy'], sig_steep)
+            sig_w_factor = sigmoid_interpolate(current_disp, dyn_bt, dyn_cl, 1.5, 0.5, sig_steep)
+        else:
+            sig_buy_pct = conf['buy']; sig_w_factor = 1.0
+
+        prev_c = row['Prev_Close'] if not pd.isna(row['Prev_Close']) else today_close
+        if pd.isna(prev_c): prev_c = today_close
+        target_p = excel_round_down(prev_c * (1 + sig_buy_pct / 100), 2)
+
+        # [UPGRADE 3] ADR + 모멘텀 필터
+        buy_allowed = True
+        if use_adr:
+            c_adr = row['ADR'] if not pd.isna(row.get('ADR', np.nan)) else 0
+            c_mom = row.get('Mom_Proxy', 0) if not pd.isna(row.get('Mom_Proxy', np.nan)) else 0
+            c_mom_ma = row.get('Mom_MA', 0) if not pd.isna(row.get('Mom_MA', np.nan)) else 0
+            if c_adr > adr_threshold or c_mom < c_mom_ma:
+                buy_allowed = False
+
+        if buy_allowed and today_close <= target_p and len(holdings) < MAX_SLOTS:
+            curr_tiers = {h[4] for h in holdings}; unavail = curr_tiers.union(tiers_sold)
+            new_tier = 1
+            while new_tier in unavail: new_tier += 1
+            if new_tier <= MAX_SLOTS:
+                weight_pct = 10.0
+                if 'tier_weights' in params:
+                    try: weight_pct = params['tier_weights'].loc[f'Tier {new_tier}', phase]
+                    except: weight_pct = 10.0
+                weight_pct = weight_pct * sig_w_factor  # [UPGRADE 2]
+                target_seed = seed_equity * (weight_pct / 100.0)
+                bet = min(target_seed, start_cash); bet_net_fee = bet / (1 + params['fee_rate'])
+                if bet >= 10:
+                    final_qty = 0
+                    if new_tier == MAX_SLOTS: final_qty = int(bet_net_fee / target_p)
+                    else: final_qty = calculate_loc_quantity(bet_net_fee, target_p, today_close, -1*(params['loc_range']/100.0), int(params['add_order_cnt']))
+                    max_buyable = int(start_cash / (today_close * (1 + params['fee_rate'])))
+                    real_qty = min(final_qty, max_buyable)
+                    if real_qty > 0:
+                        buy_amt = today_close * real_qty * (1 + params['fee_rate']); cash -= buy_amt
+                        holdings.append([today_close, 0, real_qty, phase, new_tier, dates[i]])
+                        r_str = f"UPG|Buy{sig_buy_pct:.1f}%|W{sig_w_factor:.2f}"
+                        trade_log.append({'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase, 'Ref_Date': '-', 'Disp': disp_val, 'Price': today_close, 'Qty': real_qty, 'Profit': 0, 'Reason': r_str})
+
+        if daily_net_profit_sum != 0:
+            rate = params['profit_rate'] if daily_net_profit_sum > 0 else params['loss_rate']
+            seed_equity += daily_net_profit_sum * rate
+        current_eq = cash + sum([h[2]*today_close for h in holdings])
+        daily_equity.append(current_eq); daily_dates.append(dates[i])
+        daily_log.append({'Date': dates[i], 'Equity': round(current_eq, 2), 'Cash': round(cash, 2), 'SeedEquity': round(seed_equity, 2), 'Holdings': len(holdings)})
+
+    if not daily_equity: return None
+    final_equity = daily_equity[-1]
+    total_ret_pct = (final_equity / params['initial_balance'] - 1) * 100
+    days_total = (dates[-1] - dates[0]).days
+    cagr = ((final_equity / params['initial_balance']) ** (365/days_total) - 1) * 100 if days_total > 0 else 0
+    eq_series = pd.Series(daily_equity, index=daily_dates); peak = eq_series.cummax()
+    mdd = ((eq_series / peak - 1) * 100).min()
+    win_rate = (win_count / trade_count * 100) if trade_count > 0 else 0
+    try:
+        yearly_ret = eq_series.resample('YE').last().pct_change() * 100
+        yearly_ret.iloc[0] = (eq_series.resample('YE').last().iloc[0] / params['initial_balance'] - 1) * 100
+    except:
+        yearly_ret = eq_series.resample('Y').last().pct_change() * 100
+        yearly_ret.iloc[0] = (eq_series.resample('Y').last().iloc[0] / params['initial_balance'] - 1) * 100
+    return {
+        'CAGR': round(cagr, 2), 'MDD': round(mdd, 2), 'Final': int(final_equity),
+        'Return': round(total_ret_pct, 2), 'WinRate': round(win_rate, 2), 'Trades': trade_count,
+        'Series': eq_series, 'Yearly': yearly_ret, 'Params': params,
+        'TradeLog': pd.DataFrame(trade_log), 'DailyLog': pd.DataFrame(daily_log),
+        'CurrentHoldings': holdings, 'LastData': df.iloc[-1]
+    }
+
+# --- [UPGRADE] 전략 비교 함수 ---
+def compare_strategies(df, params):
+    """동일 params로 기존/업그레이드 엔진 비교 실행."""
+    res_orig = backtest_engine_web(df, params)
+    res_upg = backtest_engine_upgraded(df, params)
+    if not res_orig or not res_upg: return None
+    comp = pd.DataFrame({
+        '지표': ['최종자산', 'CAGR (%)', 'MDD (%)', '승률 (%)', '거래수', '수익률 (%)'],
+        '🔵 기존': [f"${res_orig['Final']:,}", res_orig['CAGR'], res_orig['MDD'], res_orig['WinRate'], res_orig['Trades'], res_orig['Return']],
+        '🟢 업그레이드': [f"${res_upg['Final']:,}", res_upg['CAGR'], res_upg['MDD'], res_upg['WinRate'], res_upg['Trades'], res_upg['Return']],
+    })
+    return {'original': res_orig, 'upgraded': res_upg, 'comparison': comp}
+
 # --- [UI 구성] ---
 # // UI 개선: 타이틀 + 서브타이틀 구조
 st.markdown("## 📊 쪼꼬야옹의 듀얼 전략 연구소 <sup style='color:#4ECDC4;font-size:0.5em;'>v2.1 BB</sup>", unsafe_allow_html=True)
@@ -976,6 +1094,20 @@ if sheet_url:
                         lab_default_w = pd.DataFrame({'Tier': [f'Tier {i}' for i in range(1, 11)], 'Bottom': [10.0]*10, 'Middle': [10.0]*10, 'Ceiling': [10.0]*10}).set_index('Tier')
                         lab_weights = st.data_editor(lab_default_w, key="lab_w_editor", use_container_width=True)
 
+                    with st.expander("🆕 업그레이드 엔진 설정", expanded=False):
+                        lab_use_upgrade = st.checkbox("✅ 업그레이드 엔진 사용", value=False)
+                        ug_c1, ug_c2 = st.columns(2)
+                        lab_dyn_thresh = ug_c1.checkbox("📊 동적 Threshold", value=True)
+                        lab_sigmoid = ug_c2.checkbox("📈 Sigmoid 매수비중", value=True)
+                        lab_adr_filter = ug_c1.checkbox("🔍 ADR+모멘텀 필터", value=True)
+                        lab_compare = ug_c2.checkbox("⚔️ 기존 대비 비교", value=True)
+                        ug_c3, ug_c4, ug_c5 = st.columns(3)
+                        lab_dyn_win = ug_c3.number_input("Threshold 창", value=60, min_value=20, max_value=252)
+                        lab_dyn_mult = ug_c4.number_input("Std 배수", value=1.5, min_value=0.5, max_value=3.0, step=0.1)
+                        lab_sig_steep = ug_c5.number_input("Sigmoid 기울기", value=15.0, min_value=1.0, max_value=50.0, step=1.0)
+                        lab_adr_thresh = ug_c3.number_input("ADR 한계(%)", value=3.5, min_value=1.0, max_value=10.0, step=0.5)
+                        lab_mom_win = ug_c4.number_input("모멘텀 MA 창", value=20, min_value=5, max_value=60)
+
                     lab_run = st.form_submit_button("🚀 백테스트 실행", type="primary", use_container_width=True)
 
             with c_lab_out:
@@ -990,21 +1122,57 @@ if sheet_url:
                         'cl_cond': l_cc, 'cl_buy': l_cb, 'cl_prof': l_cp/100, 'cl_time': l_ct,
                         'tier_weights': lab_weights
                     })
-                    
-                    res_lab = backtest_engine_web(df, lab_params)
-                    if res_lab:
-                        with st.container(border=True):
-                            m1, m2, m3, m4, m5 = st.columns(5)
-                            m1.metric("최종 자산", f"${res_lab['Final']:,.0f}")
-                            m2.metric("수익률", f"{res_lab['Return']:.2f}%")
-                            m3.metric("CAGR", f"{res_lab['CAGR']:.2f}%")
-                            m4.metric("MDD", f"{res_lab['MDD']:.2f}%")
-                            m5.metric("승률", f"{res_lab['WinRate']}%")
-                        # // UI 개선: 차트 색상을 TradingView 스타일 블루(#2962FF)로 변경
-                        st.subheader("📈 자산 추이")
-                        st.line_chart(res_lab['Series'], color="#2962FF")
-                        st.subheader("📜 매매 기록")
-                        st.dataframe(res_lab['TradeLog'], use_container_width=True, height=400)
+
+                    # [UPGRADE] 업그레이드 파라미터 추가
+                    if lab_use_upgrade:
+                        lab_params.update({
+                            'use_dynamic_thresh': lab_dyn_thresh,
+                            'use_sigmoid': lab_sigmoid,
+                            'use_adr_filter': lab_adr_filter,
+                            'dyn_window': lab_dyn_win,
+                            'dyn_std_mult': lab_dyn_mult,
+                            'sigmoid_steepness': lab_sig_steep,
+                            'adr_threshold': lab_adr_thresh,
+                            'momentum_window': lab_mom_win,
+                        })
+
+                    if lab_use_upgrade and lab_compare:
+                        # --- 비교 모드 ---
+                        comp = compare_strategies(df, lab_params)
+                        if comp:
+                            st.markdown("### ⚔️ 기존 vs 업그레이드 비교")
+                            st.dataframe(comp['comparison'], hide_index=True, use_container_width=True)
+                            
+                            st.subheader("📈 자산 추이 비교")
+                            chart_df = pd.DataFrame({
+                                '🔵 기존': comp['original']['Series'],
+                                '🟢 업그레이드': comp['upgraded']['Series']
+                            })
+                            st.line_chart(chart_df, color=["#6C7B95", "#4ECDC4"])
+
+                            tab_orig_log, tab_upg_log = st.tabs(["🔵 기존 매매기록", "🟢 업그레이드 매매기록"])
+                            with tab_orig_log:
+                                st.dataframe(comp['original']['TradeLog'], use_container_width=True, height=300)
+                            with tab_upg_log:
+                                st.dataframe(comp['upgraded']['TradeLog'], use_container_width=True, height=300)
+                        else:
+                            st.error("비교 실행 실패 — 데이터를 확인해주세요.")
+                    else:
+                        # --- 단일 실행 모드 ---
+                        engine_fn = backtest_engine_upgraded if lab_use_upgrade else backtest_engine_web
+                        res_lab = engine_fn(df, lab_params)
+                        if res_lab:
+                            with st.container(border=True):
+                                m1, m2, m3, m4, m5 = st.columns(5)
+                                m1.metric("최종 자산", f"${res_lab['Final']:,.0f}")
+                                m2.metric("수익률", f"{res_lab['Return']:.2f}%")
+                                m3.metric("CAGR", f"{res_lab['CAGR']:.2f}%")
+                                m4.metric("MDD", f"{res_lab['MDD']:.2f}%")
+                                m5.metric("승률", f"{res_lab['WinRate']}%")
+                            st.subheader("📈 자산 추이")
+                            st.line_chart(res_lab['Series'], color="#4ECDC4")
+                            st.subheader("📜 매매 기록")
+                            st.dataframe(res_lab['TradeLog'], use_container_width=True, height=400)
 
         # --- [탭 3: 몬테카를로 최적화] ---
         with tab_mc:
