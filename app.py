@@ -445,12 +445,19 @@ def backtest_engine_web(df, params):
         daily_net_profit_sum = 0
         
         for stock in holdings[:]:
-            buy_p, days, qty, mode, tier, buy_dt = stock
+            buy_p, days, qty, mode, tier, buy_dt, peak_price = stock
             s_conf = strategy[mode]
             days += 1
+            # // NEW: MDD 패치 - peak_price 갱신
+            peak_price = max(peak_price, today_close)
+            stock[6] = peak_price
             target_p = excel_round_up(buy_p * (1 + s_conf['prof']), 2)
             is_sold = False; reason = ""
-            if days >= s_conf['time']: is_sold = True; reason = f"TimeCut({days}d)"
+            # // NEW: MDD 패치 - 트레일링 스탑 (trailing_pct > 0 일 때만)
+            t_pct = params.get('trailing_pct', 0)
+            if t_pct > 0 and today_close < peak_price * (1 - t_pct):
+                is_sold = True; reason = f"TrailingStop({t_pct*100:.0f}%)"
+            elif days >= s_conf['time']: is_sold = True; reason = f"TimeCut({days}d)"
             elif today_close >= target_p: 
                 # [NEW] 볼린저 밴드 워크 (익절 지연) 로직
                 if params.get('use_bb_walk', False) and today_close > row['BB_Upper']:
@@ -508,7 +515,7 @@ def backtest_engine_web(df, params):
                     if real_qty > 0:
                         buy_amt = today_close * real_qty * (1 + params['fee_rate'])
                         cash -= buy_amt
-                        holdings.append([today_close, 0, real_qty, phase, new_tier, dates[i]])
+                        holdings.append([today_close, 0, real_qty, phase, new_tier, dates[i], today_close])  # // NEW: peak_price 초기값
                         trade_log.append({
                             'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase, 
                             'Ref_Date': '-', 'Disp': disp_val, 'Price': today_close, 'Qty': real_qty, 
@@ -688,12 +695,19 @@ def backtest_engine_5mode(df, params):
 
         # ===== 매도 로직 (기존 동일) =====
         for stock in holdings[:]:
-            buy_p, days, qty, mode, tier, buy_dt = stock
+            buy_p, days, qty, mode, tier, buy_dt, peak_price = stock
             s_conf = mode_config[mode]
             days += 1
+            # // NEW: MDD 패치 - peak_price 갱신
+            peak_price = max(peak_price, today_close)
+            stock[6] = peak_price
             target_p = excel_round_up(buy_p * (1 + s_conf['prof']), 2)
             is_sold = False; reason = ""
-            if days >= s_conf['time']: is_sold = True; reason = f"TimeCut({days}d)"
+            # // NEW: MDD 패치 - 트레일링 스탑
+            t_pct = params.get('trailing_pct', 0)
+            if t_pct > 0 and today_close < peak_price * (1 - t_pct):
+                is_sold = True; reason = f"TrailingStop({t_pct*100:.0f}%)"
+            elif days >= s_conf['time']: is_sold = True; reason = f"TimeCut({days}d)"
             elif today_close >= target_p:
                 if params.get('use_bb_walk', False) and today_close > row['BB_Upper']:
                     is_sold = False
@@ -748,7 +762,7 @@ def backtest_engine_5mode(df, params):
                     if real_qty > 0:
                         buy_amt = today_close * real_qty * (1 + params['fee_rate'])
                         cash -= buy_amt
-                        holdings.append([today_close, 0, real_qty, phase, new_tier, dates[i]])
+                        holdings.append([today_close, 0, real_qty, phase, new_tier, dates[i], today_close])  # // NEW: peak_price
                         trade_log.append({
                             'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase,
                             'Ref_Date': '-', 'Disp': disp_val, 'Price': today_close, 'Qty': real_qty,
@@ -934,14 +948,25 @@ def analyze_backtest_results(result):
 
 # --- [전략 비교 함수] ---
 def compare_5mode(df, params):
-    """기존 3모드 vs 5모드 비교 실행."""
-    res_orig = backtest_engine_web(df, params)
+    """기존 3모드(trailing=0) vs 5모드+패치 비교 실행."""
+    # 기존: 트레일링 없는 순수 3모드
+    params_base = params.copy()
+    params_base['trailing_pct'] = 0
+    res_orig = backtest_engine_web(df, params_base)
+    # 패치: 트레일링 + 5모드
     res_5m = backtest_engine_5mode(df, params)
     if not res_orig or not res_5m: return None
+    # Sharpe 계산 헬퍼
+    def _sharpe(series):
+        try:
+            daily_ret = series.pct_change().dropna()
+            if daily_ret.std() == 0: return 0
+            return round((daily_ret.mean() / daily_ret.std()) * (252**0.5), 2)
+        except: return 0
     comp = pd.DataFrame({
-        '지표': ['최종자산', 'CAGR (%)', 'MDD (%)', '승률 (%)', '거래수', '수익률 (%)'],
-        '🔵 3모드': [f"${res_orig['Final']:,}", res_orig['CAGR'], res_orig['MDD'], res_orig['WinRate'], res_orig['Trades'], res_orig['Return']],
-        '🟢 5모드': [f"${res_5m['Final']:,}", res_5m['CAGR'], res_5m['MDD'], res_5m['WinRate'], res_5m['Trades'], res_5m['Return']],
+        '지표': ['최종자산', 'CAGR (%)', 'MDD (%)', '승률 (%)', '거래수', '수익률 (%)', 'Sharpe'],
+        '🔵 기존 3모드': [f"${res_orig['Final']:,}", res_orig['CAGR'], res_orig['MDD'], res_orig['WinRate'], res_orig['Trades'], res_orig['Return'], _sharpe(res_orig['Series'])],
+        '🟢 패치 (5모드+트레일링)': [f"${res_5m['Final']:,}", res_5m['CAGR'], res_5m['MDD'], res_5m['WinRate'], res_5m['Trades'], res_5m['Return'], _sharpe(res_5m['Series'])],
     })
     return {'original': res_orig, 'fivemode': res_5m, 'comparison': comp}
 
@@ -961,6 +986,12 @@ with st.sidebar:
         st.caption("📤 HTS 주문 전송 시트")
     if order_sheet_url: load_settings_from_gsheet(order_sheet_url)
     
+    # // NEW: MDD 패치 옵션
+    with st.expander("🪡 MDD 패치 옵션", expanded=False):
+        use_5mode = st.checkbox("🆕 5모드 활성 (MA 이격도 전용)", value=False, help="MA 이격도 전략에서 PANIC_BOTTOM/BEARISH 등 5모드 분류 적용")
+        trailing_pct = st.number_input("🛑 트레일링 스탑 (%)", 0.0, 30.0, 5.0, step=0.5, help="매수 후 고점 대비 N% 하락 시 손절매. 0=비활성") / 100
+        st.caption("ℹ️ 5모드 OFF + 트레일링 0% = 기존 3모드 동일")
+
     st.markdown("")
     # // UI 개선: 전략 설정 탭 – 명확한 시각적 분리
     st.markdown("## ⚔️ 전략 설정")
@@ -985,7 +1016,7 @@ with st.sidebar:
 
         # [NEW] 볼린저 밴드 익절 지연 체크박스
         k_bb_walk = f"bb_walk_{suffix}"
-        use_bb_walk = st.checkbox("🌭 볼린저 밴드 익절 지연 (Band Walk)", value=st.session_state.get(k_bb_walk, False), key=k_bb_walk, help="목표 수익률에 도달해도 주가가 볼린저 밴드 상단 위에 있으면 매도를 보류합니다.")
+        use_bb_walk = st.checkbox("🌭 볼린저 밴드 익절 지연 (Band Walk)", value=st.session_state.get(k_bb_walk, True), key=k_bb_walk, help="목표 수익률에 도달해도 주가가 볼린저 밴드 상단 위에 있으면 매도를 보류합니다.")  # // NEW: 기본 True
 
         # // UI 개선: 고급 파라미터를 Expander로 숨김
         with st.expander("⚙️ 수수료 & 복리 설정", expanded=False):
@@ -997,8 +1028,8 @@ with st.sidebar:
             
             c_loc1, c_loc2 = st.columns(2)
             k_add = f"add_{suffix}"; k_rng = f"rng_{suffix}"
-            add_order_cnt = c_loc1.number_input("분할 횟수", value=st.session_state.get(k_add, 4), min_value=1, key=k_add) 
-            loc_range = c_loc2.number_input("LOC 범위 (-%)", value=st.session_state.get(k_rng, 20.0), min_value=0.0, key=k_rng)
+            add_order_cnt = c_loc1.number_input("분할 횟수", value=st.session_state.get(k_add, 3), min_value=1, key=k_add)  # // NEW: 4→3
+            loc_range = c_loc2.number_input("LOC 범위 (-%)", value=st.session_state.get(k_rng, 15.0), min_value=0.0, key=k_rng)  # // NEW: 20→15
             k_ma = f"ma_{suffix}"
             ma_win = st.number_input("이평선 (MA)", 50, 300, st.session_state.get(k_ma, 200), key=k_ma)
 
@@ -1054,7 +1085,9 @@ with st.sidebar:
             'bt_cond': bt_cond, 'bt_buy': bt_buy, 'bt_prof': bt_prof/100, 'bt_time': bt_time,
             'md_buy': md_buy, 'md_prof': md_prof/100, 'md_time': md_time,
             'cl_cond': cl_cond, 'cl_buy': cl_buy, 'cl_prof': cl_prof/100, 'cl_time': cl_time,
-            'tier_weights': edited_w, 'label': key_prefix
+            'tier_weights': edited_w, 'label': key_prefix,
+            # // NEW: MDD 패치 파라미터
+            'trailing_pct': trailing_pct, 'use_5mode': use_5mode
         }
 
     with tab_s: params_s = render_strategy_inputs('s', '🛡️ 안정형')
@@ -1083,7 +1116,11 @@ if sheet_url:
                     with st.container(border=True):
                         st.markdown(f"### {strategy_name}")
                         st.caption(f"전략: {p_params['strategy_type']}")
-                    res = backtest_engine_web(df, p_params)
+                    # // NEW: MDD 패치 - 5모드 토글 대시보드 적용
+                    if p_params.get('use_5mode') and p_params.get('strategy_type') == 'MA 이격도':
+                        res = backtest_engine_5mode(df, p_params)
+                    else:
+                        res = backtest_engine_web(df, p_params)
                     if not res: st.error("데이터 부족"); return hts_orders
 
                     last_row = res['LastData']
@@ -1260,9 +1297,10 @@ if sheet_url:
                         lab_default_w = pd.DataFrame({'Tier': [f'Tier {i}' for i in range(1, 11)], 'Bottom': [10.0]*10, 'Middle': [10.0]*10, 'Ceiling': [10.0]*10}).set_index('Tier')
                         lab_weights = st.data_editor(lab_default_w, key="lab_w_editor", use_container_width=True)
 
-                    with st.expander("🆕 5모드 엔진 설정", expanded=False):
+                    with st.expander("🪡 MDD 패치 옵션", expanded=False):
                         lab_use_5mode = st.checkbox("✅ 5모드 엔진 사용 (MA 이격도 전용)", value=False)
-                        lab_compare_5m = st.checkbox("⚔️ 3모드 vs 5모드 비교", value=True)
+                        lab_compare_5m = st.checkbox("⚔️ 기존 3모드 vs 패치 비교", value=True)
+                        lab_trailing = st.number_input("🛑 트레일링 스탑 (%)", 0.0, 30.0, 5.0, step=0.5) / 100
 
                     lab_run = st.form_submit_button("🚀 백테스트 실행", type="primary", use_container_width=True)
 
@@ -1277,24 +1315,25 @@ if sheet_url:
                         'bt_cond': l_bc, 'bt_buy': l_bb, 'bt_prof': l_bp/100, 'bt_time': l_bt,
                         'md_buy': l_mb, 'md_prof': l_mp/100, 'md_time': l_mt,
                         'cl_cond': l_cc, 'cl_buy': l_cb, 'cl_prof': l_cp/100, 'cl_time': l_ct,
-                        'tier_weights': lab_weights
+                        'tier_weights': lab_weights,
+                        'trailing_pct': lab_trailing, 'use_5mode': lab_use_5mode  # // NEW: MDD 패치
                     })
 
                     if lab_use_5mode and lab_compare_5m:
                         # --- 3모드 vs 5모드 비교 ---
                         comp = compare_5mode(df, lab_params)
                         if comp:
-                            st.markdown("### ⚔️ 3모드 vs 5모드 비교")
+                            st.markdown("### ⚔️ 기존 3모드 vs 패치 비교")
                             st.dataframe(comp['comparison'], hide_index=True, use_container_width=True)
 
                             st.subheader("📈 자산 추이 비교")
                             chart_df = pd.DataFrame({
-                                '🔵 3모드': comp['original']['Series'],
-                                '🟢 5모드': comp['fivemode']['Series']
+                                '🔵 기존 3모드': comp['original']['Series'],
+                                '🟢 패치': comp['fivemode']['Series']
                             })
                             st.line_chart(chart_df, color=["#6C7B95", "#4ECDC4"])
 
-                            tab_3m, tab_5m = st.tabs(["🔵 3모드 매매기록", "🟢 5모드 매매기록"])
+                            tab_3m, tab_5m = st.tabs(["🔵 기존 3모드 매매기록", "🟢 패치 매매기록"])
                             with tab_3m:
                                 st.dataframe(comp['original']['TradeLog'], use_container_width=True, height=300)
                             with tab_5m:
