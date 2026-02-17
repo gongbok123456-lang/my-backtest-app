@@ -660,15 +660,22 @@ def backtest_engine_5mode(df, params):
 
         # ===== 모드 분류 =====
         if strat_type == 'MA 이격도':
-            # 5모드 분류 (우선순위 순서)
+            # 5모드 분류 (우선순위 순서) - // NEW: 5모드 커스텀 params 적용
             vol_ok = (vol_r > 1.8) if has_volume else True
-            if current_disp < 0.82 and current_rsi < 25 and bb_pos < -1.8 and vol_ok:
+            p_disp = params.get('panic_disp_th', 0.82)
+            p_rsi = params.get('panic_rsi_th', 25)
+            p_bb = params.get('panic_bb_th', -1.8)
+            b_rsi = params.get('bear_rsi_th', 60)
+            b_disp = params.get('bear_disp_th', 1.05)
+            ceil_rsi = params.get('ceil_rsi_th', 65)
+            bot_rsi = params.get('bot_rsi_th', 45)
+            if current_disp < p_disp and current_rsi < p_rsi and bb_pos < p_bb and vol_ok:
                 phase = 'PANIC_BOTTOM'
-            elif current_disp > params['cl_cond'] or current_rsi > 65:
+            elif current_disp > params['cl_cond'] or current_rsi > ceil_rsi:
                 phase = 'CEILING'
-            elif current_rsi > 60 and current_disp > 1.05 and bb_pos > 0:
+            elif current_rsi > b_rsi and current_disp > b_disp and bb_pos > 0:
                 phase = 'BEARISH'
-            elif current_disp < params['bt_cond'] or current_rsi < 45:
+            elif current_disp < params['bt_cond'] or current_rsi < bot_rsi:
                 phase = 'BOTTOM'
             else:
                 phase = 'NEUTRAL'
@@ -1288,7 +1295,19 @@ if sheet_url:
                     with st.expander("🪡 MDD 패치 옵션", expanded=False):
                         lab_use_5mode = st.checkbox("✅ 5모드 엔진 사용 (MA 이격도 전용)", value=False)
                         lab_compare_5m = st.checkbox("⚔️ 기존 3모드 vs 패치 비교", value=True)
-                        lab_trailing = st.number_input("🛑 트레일링 스탑 (%)", 0.0, 30.0, 5.0, step=0.5) / 100
+                        lab_trailing = st.number_input("🛑 트레일링 스탑 (%)", 0.0, 100.0, 20.0, step=1.0) / 100  # // NEW: max 100%, default 20%
+
+                    # // NEW: 5모드 커스텀 설정
+                    with st.expander("🆕 5모드 커스텀 설정", expanded=False):
+                        st.caption("ℹ️ 5모드 ON 시에만 적용. 기본값 = 엔진 하드코드.")
+                        fm_c1, fm_c2 = st.columns(2)
+                        lab_panic_disp = fm_c1.number_input("🟥 PANIC 이격도 (<)", value=0.82, step=0.01, format="%.2f")
+                        lab_panic_rsi = fm_c2.number_input("🟥 PANIC RSI (<)", value=25.0, step=1.0)
+                        lab_panic_bb = fm_c1.number_input("🟥 PANIC BB_Pos (<)", value=-1.8, step=0.1)
+                        lab_bear_rsi = fm_c2.number_input("🟡 BEARISH RSI (>)", value=60.0, step=1.0)
+                        lab_bear_disp = fm_c1.number_input("🟡 BEARISH 이격도 (>)", value=1.05, step=0.01, format="%.2f")
+                        lab_ceil_rsi = fm_c2.number_input("🟠 CEILING RSI (>)", value=65.0, step=1.0)
+                        lab_bot_rsi = fm_c1.number_input("🔵 BOTTOM RSI (<)", value=45.0, step=1.0)
 
                     lab_run = st.form_submit_button("🚀 백테스트 실행", type="primary", use_container_width=True)
 
@@ -1304,7 +1323,11 @@ if sheet_url:
                         'md_buy': l_mb, 'md_prof': l_mp/100, 'md_time': l_mt,
                         'cl_cond': l_cc, 'cl_buy': l_cb, 'cl_prof': l_cp/100, 'cl_time': l_ct,
                         'tier_weights': lab_weights,
-                        'trailing_pct': lab_trailing, 'use_5mode': lab_use_5mode  # // NEW: MDD 패치
+                        'trailing_pct': lab_trailing, 'use_5mode': lab_use_5mode,
+                        # // NEW: 5모드 커스텀 threshold
+                        'panic_disp_th': lab_panic_disp, 'panic_rsi_th': lab_panic_rsi, 'panic_bb_th': lab_panic_bb,
+                        'bear_rsi_th': lab_bear_rsi, 'bear_disp_th': lab_bear_disp,
+                        'ceil_rsi_th': lab_ceil_rsi, 'bot_rsi_th': lab_bot_rsi
                     })
 
                     if lab_use_5mode and lab_compare_5m:
