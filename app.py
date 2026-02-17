@@ -986,12 +986,6 @@ with st.sidebar:
         st.caption("📤 HTS 주문 전송 시트")
     if order_sheet_url: load_settings_from_gsheet(order_sheet_url)
     
-    # // NEW: MDD 패치 옵션
-    with st.expander("🪡 MDD 패치 옵션", expanded=False):
-        use_5mode = st.checkbox("🆕 5모드 활성 (MA 이격도 전용)", value=False, help="MA 이격도 전략에서 PANIC_BOTTOM/BEARISH 등 5모드 분류 적용")
-        trailing_pct = st.number_input("🛑 트레일링 스탑 (%)", 0.0, 30.0, 5.0, step=0.5, help="매수 후 고점 대비 N% 하락 시 손절매. 0=비활성") / 100
-        st.caption("ℹ️ 5모드 OFF + 트레일링 0% = 기존 3모드 동일")
-
     st.markdown("")
     # // UI 개선: 전략 설정 탭 – 명확한 시각적 분리
     st.markdown("## ⚔️ 전략 설정")
@@ -1016,7 +1010,7 @@ with st.sidebar:
 
         # [NEW] 볼린저 밴드 익절 지연 체크박스
         k_bb_walk = f"bb_walk_{suffix}"
-        use_bb_walk = st.checkbox("🌭 볼린저 밴드 익절 지연 (Band Walk)", value=st.session_state.get(k_bb_walk, True), key=k_bb_walk, help="목표 수익률에 도달해도 주가가 볼린저 밴드 상단 위에 있으면 매도를 보류합니다.")  # // NEW: 기본 True
+        use_bb_walk = st.checkbox("🌭 볼린저 밴드 익절 지연 (Band Walk)", value=st.session_state.get(k_bb_walk, False), key=k_bb_walk, help="목표 수익률에 도달해도 주가가 볼린저 밴드 상단 위에 있으면 매도를 보류합니다.")
 
         # // UI 개선: 고급 파라미터를 Expander로 숨김
         with st.expander("⚙️ 수수료 & 복리 설정", expanded=False):
@@ -1028,8 +1022,8 @@ with st.sidebar:
             
             c_loc1, c_loc2 = st.columns(2)
             k_add = f"add_{suffix}"; k_rng = f"rng_{suffix}"
-            add_order_cnt = c_loc1.number_input("분할 횟수", value=st.session_state.get(k_add, 3), min_value=1, key=k_add)  # // NEW: 4→3
-            loc_range = c_loc2.number_input("LOC 범위 (-%)", value=st.session_state.get(k_rng, 15.0), min_value=0.0, key=k_rng)  # // NEW: 20→15
+            add_order_cnt = c_loc1.number_input("분할 횟수", value=st.session_state.get(k_add, 4), min_value=1, key=k_add)
+            loc_range = c_loc2.number_input("LOC 범위 (-%)", value=st.session_state.get(k_rng, 20.0), min_value=0.0, key=k_rng)
             k_ma = f"ma_{suffix}"
             ma_win = st.number_input("이평선 (MA)", 50, 300, st.session_state.get(k_ma, 200), key=k_ma)
 
@@ -1085,9 +1079,7 @@ with st.sidebar:
             'bt_cond': bt_cond, 'bt_buy': bt_buy, 'bt_prof': bt_prof/100, 'bt_time': bt_time,
             'md_buy': md_buy, 'md_prof': md_prof/100, 'md_time': md_time,
             'cl_cond': cl_cond, 'cl_buy': cl_buy, 'cl_prof': cl_prof/100, 'cl_time': cl_time,
-            'tier_weights': edited_w, 'label': key_prefix,
-            # // NEW: MDD 패치 파라미터
-            'trailing_pct': trailing_pct, 'use_5mode': use_5mode
+            'tier_weights': edited_w, 'label': key_prefix
         }
 
     with tab_s: params_s = render_strategy_inputs('s', '🛡️ 안정형')
@@ -1116,11 +1108,7 @@ if sheet_url:
                     with st.container(border=True):
                         st.markdown(f"### {strategy_name}")
                         st.caption(f"전략: {p_params['strategy_type']}")
-                    # // NEW: MDD 패치 - 5모드 토글 대시보드 적용
-                    if p_params.get('use_5mode') and p_params.get('strategy_type') == 'MA 이격도':
-                        res = backtest_engine_5mode(df, p_params)
-                    else:
-                        res = backtest_engine_web(df, p_params)
+                    res = backtest_engine_web(df, p_params)
                     if not res: st.error("데이터 부족"); return hts_orders
 
                     last_row = res['LastData']
@@ -1214,7 +1202,7 @@ if sheet_url:
                     else:
                         sell_list = []
                         for h in res['CurrentHoldings']:
-                            buy_p, days, qty, mode, tier, buy_dt = h
+                            buy_p, days, qty, mode, tier, buy_dt, _peak = h
                             if mode == 'Bottom': prof_rate = p_params['bt_prof']; time_limit = p_params['bt_time']
                             elif mode == 'Ceiling': prof_rate = p_params['cl_prof']; time_limit = p_params['cl_time']
                             else: prof_rate = p_params['md_prof']; time_limit = p_params['md_time']
