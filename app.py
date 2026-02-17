@@ -512,6 +512,7 @@ def backtest_engine_web(df, params):
                         trade_log.append({
                             'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase, 
                             'Ref_Date': '-', 'Disp': disp_val, 'Price': today_close, 'Qty': real_qty, 
+                            'Seed(1회)': round(seed_equity, 0), 'Invest': round(buy_amt, 0),
                             'Profit': 0, 'Reason': 'LOC' if strat_type != 'RSI 다이버전스' or not is_div else 'Divergence'
                         })
         
@@ -751,6 +752,7 @@ def backtest_engine_5mode(df, params):
                         trade_log.append({
                             'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase,
                             'Ref_Date': '-', 'Disp': disp_val, 'Price': today_close, 'Qty': real_qty,
+                            'Seed(1회)': round(seed_equity, 0), 'Invest': round(buy_amt, 0),
                             'Profit': 0, 'Reason': f'5M|{phase}'
                         })
 
@@ -1230,8 +1232,9 @@ if sheet_url:
                     l_end = c_l2.date_input("종료", value=today)
                     
                     c_b1, c_b2, c_b3 = st.columns(3)
-                    l_add = c_b1.number_input("분할", value=4)
-                    l_rng = c_b2.number_input("범위(-%)", value=20.0)
+                    lab_balance = c_b1.number_input("💰 초기자본($)", value=10000, min_value=100, step=1000)
+                    l_add = c_b2.number_input("분할", value=4)
+                    l_rng = c_b3.number_input("범위(-%)", value=20.0)
                     
                     st.divider()
                     t_bot, t_mid, t_ceil = st.tabs(["📉 바닥", "➖ 중간", "📈 천장"])
@@ -1267,6 +1270,7 @@ if sheet_url:
                 if lab_run:
                     lab_params = params_s.copy()
                     lab_params.update({
+                        'initial_balance': lab_balance,
                         'strategy_type': lab_st_type, 'ma_window': l_ma, 'use_bb_walk': lab_use_bb,
                         'start_date': l_start, 'end_date': l_end,
                         'add_order_cnt': l_add, 'loc_range': l_rng,
