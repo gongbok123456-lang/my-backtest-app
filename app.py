@@ -548,43 +548,50 @@ def backtest_engine_web(df, params):
 	    'CurrentHoldings': holdings, 'LastData': df.iloc[-1]
     }
 
-# --- [UPGRADE] 헬퍼: Sigmoid 보간 ---
-def sigmoid_interpolate(val, low_bound, high_bound, low_out, high_out, steepness=15.0):
-    """S자 곡선으로 low_out ↔ high_out 사이를 연속 보간. val이 low_bound 근처→low_out, high_bound 근처→high_out."""
-    if high_bound == low_bound: return (low_out + high_out) / 2.0
-    mid = (low_bound + high_bound) / 2.0
-    scale = 2.0 / (high_bound - low_bound)
-    x = (val - mid) * scale * steepness
-    sig = 1.0 / (1.0 + np.exp(-np.clip(x, -500, 500)))
-    return low_out + (high_out - low_out) * sig
-
-# --- [UPGRADE] 업그레이드 백테스트 엔진 ---
-def backtest_engine_upgraded(df, params):
+# --- [5모드 백테스트 엔진] ---
+def backtest_engine_5mode(df, params):
     """
-    backtest_engine_web + 3가지 업그레이드:
-    1. 동적 Threshold (rolling mean±std, shift(1))
-    2. Sigmoid 연속 매수 비중
-    3. ADR + 모멘텀 프록시 필터
-    출력 형식 동일 → UI 호환.
+    5모드 체계 백테스트 엔진.
+    MA 이격도: PANIC_BOTTOM / BOTTOM / NEUTRAL / BEARISH / CEILING
+    RSI/다이버전스: 기존 3모드 유지 (Bottom/Middle/Ceiling)
+    출력 형식은 backtest_engine_web과 동일 → UI 호환.
     """
     df = df.copy()
     df['QQQ'] = pd.to_numeric(df['QQQ'], errors='coerce')
     ma_win = int(params['ma_window'])
-    
-    # 기존 지표 (동일)
+
+    # 1. 이동평균 및 이격도
     df['MA_Daily'] = df['QQQ'].rolling(window=ma_win, min_periods=1).mean()
     df['Log_Start_Price'] = df['QQQ'].shift(ma_win - 1)
+
+    # 2. RSI
     delta = df['SOXL'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
+
+    # 3. RSI 다이버전스
     df['Low_10'] = df['SOXL'].rolling(window=10).min()
+    df['RSI_Low_10'] = df['RSI'].rolling(window=10).min()
     df['Bullish_Div'] = (df['SOXL'] == df['Low_10']) & (df['RSI'] > df['RSI'].shift(1)) & (df['RSI'] < 45)
+
+    # 4. 볼린저 밴드
     df['BB_MA20'] = df['SOXL'].rolling(window=20).mean()
     df['BB_STD20'] = df['SOXL'].rolling(window=20).std()
     df['BB_Upper'] = df['BB_MA20'] + (2 * df['BB_STD20'])
+    # [5모드] 볼린저 밴드 위치: 표준화된 가격 위치
+    df['BB_Pos'] = (df['SOXL'] - df['BB_MA20']) / df['BB_STD20'].replace(0, np.nan)
 
+    # 5. 거래량 비율 (Volume 컬럼 있을 때만)
+    has_volume = 'Volume' in df.columns
+    if has_volume:
+        df['Volume'] = pd.to_numeric(df['Volume'], errors='coerce')
+        df['Vol_Ratio'] = df['Volume'] / df['Volume'].rolling(20, min_periods=5).mean()
+    else:
+        df['Vol_Ratio'] = np.nan
+
+    # 6. 주간 이격도 매핑 (기존 동일)
     weekly_resampled = df[['QQQ', 'MA_Daily', 'Log_Start_Price']].resample('W-FRI').last()
     weekly_resampled.columns = ['QQQ_Fri', 'MA_Fri', 'Start_Price_Fri']
     weekly_resampled['Disp_Fri'] = weekly_resampled['QQQ_Fri'] / weekly_resampled['MA_Fri']
@@ -595,25 +602,7 @@ def backtest_engine_upgraded(df, params):
     df['Log_Ref_Date'] = daily_shifted['QQQ_Fri'].reindex(df.index).index
     df['Prev_Close'] = df['SOXL'].shift(1)
 
-    # [UPGRADE 1] 동적 Threshold
-    dyn_win = int(params.get('dyn_window', 60))
-    dyn_std_mult = float(params.get('dyn_std_mult', 1.5))
-    disp_ma = df['Basis_Disp'].rolling(window=dyn_win, min_periods=max(20, dyn_win//3)).mean().shift(1)
-    disp_std = df['Basis_Disp'].rolling(window=dyn_win, min_periods=max(20, dyn_win//3)).std().shift(1)
-    df['Dyn_Bottom'] = disp_ma - dyn_std_mult * disp_std
-    df['Dyn_Ceiling'] = disp_ma + dyn_std_mult * disp_std
-
-    # [UPGRADE 3] ADR
-    adr_win = int(params.get('adr_window', 20))
-    df['ADR'] = df['SOXL'].pct_change().abs().rolling(window=adr_win, min_periods=5).mean() * 100
-
-    # [UPGRADE 3] 모멘텀 프록시 (OBV 대체)
-    momentum_win = int(params.get('momentum_window', 20))
-    price_dir = np.where(df['SOXL'] > df['SOXL'].shift(1), 1.0, np.where(df['SOXL'] < df['SOXL'].shift(1), -1.0, 0.0))
-    df['Mom_Proxy'] = pd.Series(price_dir, index=df.index).cumsum()
-    df['Mom_MA'] = df['Mom_Proxy'].rolling(window=momentum_win, min_periods=5).mean()
-
-    # 기간 필터
+    # 7. 기간 필터
     start_dt = pd.to_datetime(params['start_date'])
     end_dt = pd.to_datetime(params['end_date'])
     df = df.sort_index()
@@ -622,110 +611,133 @@ def backtest_engine_upgraded(df, params):
     if len(df) == 0: return None
 
     dates = df.index
-    strategy = {
-        'Bottom':  {'cond': params['bt_cond'], 'buy': params['bt_buy'], 'prof': params['bt_prof'], 'time': params['bt_time']},
-        'Ceiling': {'cond': params['cl_cond'], 'buy': params['cl_buy'], 'prof': params['cl_prof'], 'time': params['cl_time']},
-        'Middle':  {'cond': 999, 'buy': params['md_buy'], 'prof': params['md_prof'], 'time': params['md_time']}
-    }
-    use_dyn = params.get('use_dynamic_thresh', True)
-    use_sig = params.get('use_sigmoid', True)
-    use_adr = params.get('use_adr_filter', True)
-    adr_threshold = float(params.get('adr_threshold', 3.5))
-    sig_steep = float(params.get('sigmoid_steepness', 15.0))
 
-    cash = params['initial_balance']; seed_equity = cash
-    holdings = []; trade_log = []; daily_log = []; daily_equity = []; daily_dates = []
-    trade_count = 0; win_count = 0; MAX_SLOTS = 10; SEC_FEE = 0.0000278
+    # ===== 모드 설정 =====
+    # 5모드 파라미터 (MA 이격도용)
+    mode_config = {
+        'PANIC_BOTTOM': {'buy': 20.0,  'prof': 0.04,  'time': 8,  'weight_factor': 1.5},
+        'BOTTOM':       {'buy': params['bt_buy'], 'prof': params['bt_prof'], 'time': params['bt_time'], 'weight_factor': 1.2},
+        'NEUTRAL':      {'buy': params['md_buy'], 'prof': params['md_prof'], 'time': params['md_time'], 'weight_factor': 1.0},
+        'BEARISH':      {'buy': max(params['md_buy'], -0.5), 'prof': max(params['md_prof'], 0.02), 'time': min(params['md_time'], 25), 'weight_factor': 0.7},
+        'CEILING':      {'buy': params['cl_buy'], 'prof': params['cl_prof'], 'time': params['cl_time'], 'weight_factor': 0.5},
+        # 3모드 (RSI/다이버전스용)
+        'Bottom':  {'buy': params['bt_buy'], 'prof': params['bt_prof'], 'time': params['bt_time'], 'weight_factor': 1.0},
+        'Middle':  {'buy': params['md_buy'], 'prof': params['md_prof'], 'time': params['md_time'], 'weight_factor': 1.0},
+        'Ceiling': {'buy': params['cl_buy'], 'prof': params['cl_prof'], 'time': params['cl_time'], 'weight_factor': 1.0},
+    }
+    # 5모드 → 티어비중 컬럼 매핑
+    TIER_COL = {'PANIC_BOTTOM': 'Bottom', 'BOTTOM': 'Bottom', 'NEUTRAL': 'Middle', 'BEARISH': 'Middle', 'CEILING': 'Ceiling',
+                'Bottom': 'Bottom', 'Middle': 'Middle', 'Ceiling': 'Ceiling'}
+
+    cash = params['initial_balance']
+    seed_equity = cash
+    holdings = []
+    trade_log = []; daily_log = []; daily_equity = []; daily_dates = []
+    trade_count = 0; win_count = 0
+    MAX_SLOTS = 10; SEC_FEE = 0.0000278
 
     for i in range(len(df)):
-        row = df.iloc[i]; today_close = row['SOXL']
+        row = df.iloc[i]
+        today_close = row['SOXL']
         if pd.isna(today_close) or today_close <= 0: continue
         if params.get('force_round', True): today_close = round(today_close, 2)
+
         start_cash = cash
         strat_type = params.get('strategy_type', 'MA 이격도')
         current_disp = row['Basis_Disp'] if not pd.isna(row['Basis_Disp']) else 1.0
         current_rsi = row['RSI'] if not pd.isna(row['RSI']) else 50.0
         is_div = row['Bullish_Div']
+        bb_pos = row['BB_Pos'] if not pd.isna(row['BB_Pos']) else 0.0
+        vol_r = row['Vol_Ratio'] if not pd.isna(row['Vol_Ratio']) else 0.0
 
-        # [UPGRADE 1] 동적 vs 고정 threshold
-        if use_dyn and strat_type == 'MA 이격도':
-            dyn_bt = row['Dyn_Bottom'] if not pd.isna(row.get('Dyn_Bottom', np.nan)) else params['bt_cond']
-            dyn_cl = row['Dyn_Ceiling'] if not pd.isna(row.get('Dyn_Ceiling', np.nan)) else params['cl_cond']
-        else:
-            dyn_bt = params['bt_cond']; dyn_cl = params['cl_cond']
-
-        if strat_type == 'RSI':
-            if current_rsi < dyn_bt: phase = 'Bottom'
-            elif current_rsi > dyn_cl: phase = 'Ceiling'
+        # ===== 모드 분류 =====
+        if strat_type == 'MA 이격도':
+            # 5모드 분류 (우선순위 순서)
+            vol_ok = (vol_r > 1.8) if has_volume else True
+            if current_disp < 0.82 and current_rsi < 25 and bb_pos < -1.8 and vol_ok:
+                phase = 'PANIC_BOTTOM'
+            elif current_disp > params['cl_cond'] or current_rsi > 65:
+                phase = 'CEILING'
+            elif current_rsi > 60 and current_disp > 1.05 and bb_pos > 0:
+                phase = 'BEARISH'
+            elif current_disp < params['bt_cond'] or current_rsi < 45:
+                phase = 'BOTTOM'
+            else:
+                phase = 'NEUTRAL'
+            disp_val = current_disp
+        elif strat_type == 'RSI':
+            if current_rsi < params['bt_cond']: phase = 'Bottom'
+            elif current_rsi > params['cl_cond']: phase = 'Ceiling'
             else: phase = 'Middle'
             disp_val = current_rsi
         elif strat_type == 'RSI 다이버전스':
             if is_div: phase = 'Bottom'
-            elif current_rsi > dyn_cl: phase = 'Ceiling'
+            elif current_rsi > params['cl_cond']: phase = 'Ceiling'
             else: phase = 'Middle'
             disp_val = current_rsi
         else:
-            if current_disp < dyn_bt: phase = 'Bottom'
-            elif current_disp > dyn_cl: phase = 'Ceiling'
+            if current_disp < params['bt_cond']: phase = 'Bottom'
+            elif current_disp > params['cl_cond']: phase = 'Ceiling'
             else: phase = 'Middle'
             disp_val = current_disp
 
-        conf = strategy[phase]; tiers_sold = set(); daily_net_profit_sum = 0
+        conf = mode_config[phase]
+        tiers_sold = set()
+        daily_net_profit_sum = 0
 
-        # 매도 로직 (기존 동일)
+        # ===== 매도 로직 (기존 동일) =====
         for stock in holdings[:]:
             buy_p, days, qty, mode, tier, buy_dt = stock
-            s_conf = strategy[mode]; days += 1
+            s_conf = mode_config[mode]
+            days += 1
             target_p = excel_round_up(buy_p * (1 + s_conf['prof']), 2)
             is_sold = False; reason = ""
             if days >= s_conf['time']: is_sold = True; reason = f"TimeCut({days}d)"
             elif today_close >= target_p:
-                if params.get('use_bb_walk', False) and today_close > row['BB_Upper']: is_sold = False
-                else: is_sold = True; reason = "Profit"
+                if params.get('use_bb_walk', False) and today_close > row['BB_Upper']:
+                    is_sold = False
+                else:
+                    is_sold = True; reason = "Profit"
             if is_sold:
-                holdings.remove(stock); tiers_sold.add(tier)
-                sell_amt = today_close * qty; sec_fee_val = round(sell_amt * SEC_FEE, 2)
+                holdings.remove(stock)
+                tiers_sold.add(tier)
+                sell_amt = today_close * qty
+                sec_fee_val = round(sell_amt * SEC_FEE, 2)
                 net_receive = sell_amt * (1 - params['fee_rate']) - sec_fee_val
                 buy_cost = (buy_p * qty) * (1 + params['fee_rate'])
                 real_profit = round(net_receive - buy_cost, 2)
-                daily_net_profit_sum += real_profit; cash += net_receive
+                daily_net_profit_sum += real_profit
+                cash += net_receive
                 trade_count += 1
                 if real_profit > 0: win_count += 1
-                trade_log.append({'Date': dates[i], 'Type': 'Sell', 'Tier': tier, 'Phase': mode, 'Ref_Date': '-', 'Disp': disp_val, 'Price': today_close, 'Qty': qty, 'Profit': real_profit, 'Reason': reason})
+                trade_log.append({
+                    'Date': dates[i], 'Type': 'Sell', 'Tier': tier, 'Phase': mode,
+                    'Ref_Date': '-', 'Disp': disp_val, 'Price': today_close, 'Qty': qty,
+                    'Profit': real_profit, 'Reason': reason
+                })
             else: stock[1] = days
 
-        # [UPGRADE 2] Sigmoid 연속 매수 비중
-        if use_sig and strat_type == 'MA 이격도':
-            sig_buy_pct = sigmoid_interpolate(current_disp, dyn_bt, dyn_cl, params['bt_buy'], params['cl_buy'], sig_steep)
-            sig_w_factor = sigmoid_interpolate(current_disp, dyn_bt, dyn_cl, 1.5, 0.5, sig_steep)
-        else:
-            sig_buy_pct = conf['buy']; sig_w_factor = 1.0
-
+        # ===== 매수 로직 =====
         prev_c = row['Prev_Close'] if not pd.isna(row['Prev_Close']) else today_close
         if pd.isna(prev_c): prev_c = today_close
-        target_p = excel_round_down(prev_c * (1 + sig_buy_pct / 100), 2)
+        target_p = excel_round_down(prev_c * (1 + conf['buy'] / 100), 2)
 
-        # [UPGRADE 3] ADR + 모멘텀 필터
-        buy_allowed = True
-        if use_adr:
-            c_adr = row['ADR'] if not pd.isna(row.get('ADR', np.nan)) else 0
-            c_mom = row.get('Mom_Proxy', 0) if not pd.isna(row.get('Mom_Proxy', np.nan)) else 0
-            c_mom_ma = row.get('Mom_MA', 0) if not pd.isna(row.get('Mom_MA', np.nan)) else 0
-            if c_adr > adr_threshold or c_mom < c_mom_ma:
-                buy_allowed = False
-
-        if buy_allowed and today_close <= target_p and len(holdings) < MAX_SLOTS:
-            curr_tiers = {h[4] for h in holdings}; unavail = curr_tiers.union(tiers_sold)
+        if today_close <= target_p and len(holdings) < MAX_SLOTS:
+            curr_tiers = {h[4] for h in holdings}
+            unavail = curr_tiers.union(tiers_sold)
             new_tier = 1
             while new_tier in unavail: new_tier += 1
             if new_tier <= MAX_SLOTS:
                 weight_pct = 10.0
+                tier_col = TIER_COL.get(phase, 'Middle')
                 if 'tier_weights' in params:
-                    try: weight_pct = params['tier_weights'].loc[f'Tier {new_tier}', phase]
+                    try: weight_pct = params['tier_weights'].loc[f'Tier {new_tier}', tier_col]
                     except: weight_pct = 10.0
-                weight_pct = weight_pct * sig_w_factor  # [UPGRADE 2]
+                # [5모드] weight_factor 적용
+                weight_pct = weight_pct * conf['weight_factor']
                 target_seed = seed_equity * (weight_pct / 100.0)
-                bet = min(target_seed, start_cash); bet_net_fee = bet / (1 + params['fee_rate'])
+                bet = min(target_seed, start_cash)
+                bet_net_fee = bet / (1 + params['fee_rate'])
                 if bet >= 10:
                     final_qty = 0
                     if new_tier == MAX_SLOTS: final_qty = int(bet_net_fee / target_p)
@@ -733,14 +745,19 @@ def backtest_engine_upgraded(df, params):
                     max_buyable = int(start_cash / (today_close * (1 + params['fee_rate'])))
                     real_qty = min(final_qty, max_buyable)
                     if real_qty > 0:
-                        buy_amt = today_close * real_qty * (1 + params['fee_rate']); cash -= buy_amt
+                        buy_amt = today_close * real_qty * (1 + params['fee_rate'])
+                        cash -= buy_amt
                         holdings.append([today_close, 0, real_qty, phase, new_tier, dates[i]])
-                        r_str = f"UPG|Buy{sig_buy_pct:.1f}%|W{sig_w_factor:.2f}"
-                        trade_log.append({'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase, 'Ref_Date': '-', 'Disp': disp_val, 'Price': today_close, 'Qty': real_qty, 'Profit': 0, 'Reason': r_str})
+                        trade_log.append({
+                            'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase,
+                            'Ref_Date': '-', 'Disp': disp_val, 'Price': today_close, 'Qty': real_qty,
+                            'Profit': 0, 'Reason': f'5M|{phase}'
+                        })
 
         if daily_net_profit_sum != 0:
             rate = params['profit_rate'] if daily_net_profit_sum > 0 else params['loss_rate']
             seed_equity += daily_net_profit_sum * rate
+
         current_eq = cash + sum([h[2]*today_close for h in holdings])
         daily_equity.append(current_eq); daily_dates.append(dates[i])
         daily_log.append({'Date': dates[i], 'Equity': round(current_eq, 2), 'Cash': round(cash, 2), 'SeedEquity': round(seed_equity, 2), 'Holdings': len(holdings)})
@@ -750,15 +767,18 @@ def backtest_engine_upgraded(df, params):
     total_ret_pct = (final_equity / params['initial_balance'] - 1) * 100
     days_total = (dates[-1] - dates[0]).days
     cagr = ((final_equity / params['initial_balance']) ** (365/days_total) - 1) * 100 if days_total > 0 else 0
-    eq_series = pd.Series(daily_equity, index=daily_dates); peak = eq_series.cummax()
+    eq_series = pd.Series(daily_equity, index=daily_dates)
+    peak = eq_series.cummax()
     mdd = ((eq_series / peak - 1) * 100).min()
     win_rate = (win_count / trade_count * 100) if trade_count > 0 else 0
+
     try:
         yearly_ret = eq_series.resample('YE').last().pct_change() * 100
         yearly_ret.iloc[0] = (eq_series.resample('YE').last().iloc[0] / params['initial_balance'] - 1) * 100
     except:
         yearly_ret = eq_series.resample('Y').last().pct_change() * 100
         yearly_ret.iloc[0] = (eq_series.resample('Y').last().iloc[0] / params['initial_balance'] - 1) * 100
+
     return {
         'CAGR': round(cagr, 2), 'MDD': round(mdd, 2), 'Final': int(final_equity),
         'Return': round(total_ret_pct, 2), 'WinRate': round(win_rate, 2), 'Trades': trade_count,
@@ -767,18 +787,161 @@ def backtest_engine_upgraded(df, params):
         'CurrentHoldings': holdings, 'LastData': df.iloc[-1]
     }
 
-# --- [UPGRADE] 전략 비교 함수 ---
-def compare_strategies(df, params):
-    """동일 params로 기존/업그레이드 엔진 비교 실행."""
+# --- [향상된 분석 함수] ---
+def analyze_backtest_results(result):
+    """
+    백테스트 결과를 심층 분석.
+    backtest_engine_web / backtest_engine_5mode 둘 다 호환.
+    반환: {'period_stats', 'tier_stats', 'yearly_stats', 'mode_stats', 'advanced_metrics'}
+    """
+    if not result or result['Trades'] == 0:
+        return None
+
+    tlog = result['TradeLog'].copy()
+    dlog = result['DailyLog'].copy()
+    eq = result['Series']
+    sells = tlog[tlog['Type'] == 'Sell'].copy()
+    if sells.empty: return None
+    sells['Date'] = pd.to_datetime(sells['Date'])
+
+    # ===== 1. 구간별 통계 (1년/3년/5년) =====
+    end_date = sells['Date'].max()
+    period_rows = []
+    for label, years in [('최근 1년', 1), ('최근 3년', 3), ('최근 5년', 5), ('전체', None)]:
+        if years:
+            cutoff = end_date - pd.DateOffset(years=years)
+            subset = sells[sells['Date'] >= cutoff]
+        else:
+            subset = sells
+        if subset.empty:
+            period_rows.append({'구간': label, '거래수': 0, '승률(%)': 0, '평균수익': 0, '손익비': 0})
+            continue
+        wins = subset[subset['Profit'] > 0]
+        losses = subset[subset['Profit'] < 0]
+        avg_win = wins['Profit'].mean() if len(wins) > 0 else 0
+        avg_loss = abs(losses['Profit'].mean()) if len(losses) > 0 else 1
+        period_rows.append({
+            '구간': label,
+            '거래수': len(subset),
+            '승률(%)': round(len(wins) / len(subset) * 100, 1),
+            '평균수익': round(subset['Profit'].mean(), 2),
+            '손익비': round(avg_win / avg_loss, 2) if avg_loss > 0 else float('inf')
+        })
+    period_stats = pd.DataFrame(period_rows)
+
+    # ===== 2. 티어별 성과 =====
+    tier_rows = []
+    for t in range(1, 11):
+        ts = sells[sells['Tier'] == t]
+        if ts.empty:
+            tier_rows.append({'티어': f'T{t}', '거래수': 0, '승률(%)': 0, '누적수익': 0, '평균수익': 0})
+            continue
+        tw = ts[ts['Profit'] > 0]
+        tier_rows.append({
+            '티어': f'T{t}',
+            '거래수': len(ts),
+            '승률(%)': round(len(tw) / len(ts) * 100, 1),
+            '누적수익': round(ts['Profit'].sum(), 2),
+            '평균수익': round(ts['Profit'].mean(), 2)
+        })
+    tier_stats = pd.DataFrame(tier_rows)
+
+    # ===== 3. 연도별 상세 =====
+    yearly_rows = []
+    sells['Year'] = sells['Date'].dt.year
+    for year in sorted(sells['Year'].unique()):
+        ys = sells[sells['Year'] == year]
+        yw = ys[ys['Profit'] > 0]
+        # 월별 수익률 계산
+        eq_year = eq[eq.index.year == year]
+        if len(eq_year) > 1:
+            monthly = eq_year.resample('ME').last().pct_change().dropna() * 100
+            max_month = monthly.max() if len(monthly) > 0 else 0
+            min_month = monthly.min() if len(monthly) > 0 else 0
+        else:
+            max_month = min_month = 0
+        yearly_rows.append({
+            '연도': year,
+            '거래수': len(ys),
+            '승률(%)': round(len(yw) / len(ys) * 100, 1) if len(ys) > 0 else 0,
+            '누적수익': round(ys['Profit'].sum(), 2),
+            '최대월(%)': round(max_month, 1),
+            '최소월(%)': round(min_month, 1)
+        })
+    yearly_stats = pd.DataFrame(yearly_rows)
+
+    # ===== 4. 모드별 분석 =====
+    mode_rows = []
+    for phase in sells['Phase'].unique():
+        ms = sells[sells['Phase'] == phase]
+        mw = ms[ms['Profit'] > 0]
+        # 평균 보유일 추정 (Reason에서 TimeCut 파싱 또는 기본값)
+        days_list = []
+        for r in ms['Reason']:
+            if 'TimeCut' in str(r):
+                try: days_list.append(int(str(r).split('(')[1].split('d')[0]))
+                except: pass
+        avg_days = np.mean(days_list) if days_list else 0
+        mode_rows.append({
+            '모드': phase,
+            '진입수': len(ms),
+            '승률(%)': round(len(mw) / len(ms) * 100, 1),
+            '평균보유일': round(avg_days, 1),
+            '누적기여': round(ms['Profit'].sum(), 2),
+            '평균수익': round(ms['Profit'].mean(), 2)
+        })
+    mode_stats = pd.DataFrame(mode_rows)
+    if not mode_stats.empty:
+        mode_stats = mode_stats.sort_values('누적기여', ascending=False)
+
+    # ===== 5. 고급 메트릭 =====
+    daily_ret = eq.pct_change().dropna()
+    ann_factor = np.sqrt(252)
+    sharpe = (daily_ret.mean() / daily_ret.std() * ann_factor) if daily_ret.std() > 0 else 0
+    down_ret = daily_ret[daily_ret < 0]
+    sortino = (daily_ret.mean() / down_ret.std() * ann_factor) if len(down_ret) > 0 and down_ret.std() > 0 else 0
+
+    # 연속 손익
+    profits = sells['Profit'].values
+    max_consec_win = max_consec_loss = curr_win = curr_loss = 0
+    for p in profits:
+        if p > 0:
+            curr_win += 1; curr_loss = 0; max_consec_win = max(max_consec_win, curr_win)
+        elif p < 0:
+            curr_loss += 1; curr_win = 0; max_consec_loss = max(max_consec_loss, curr_loss)
+        else:
+            curr_win = 0; curr_loss = 0
+
+    advanced = {
+        'Sharpe': round(sharpe, 3),
+        'Sortino': round(sortino, 3),
+        '최대연속수익': max_consec_win,
+        '최대연속손실': max_consec_loss,
+        '총거래수': len(sells),
+        '평균수익': round(sells['Profit'].mean(), 2),
+        '거래빈도(일/건)': round(len(eq) / max(len(sells), 1), 1),
+    }
+
+    return {
+        'period_stats': period_stats,
+        'tier_stats': tier_stats,
+        'yearly_stats': yearly_stats,
+        'mode_stats': mode_stats,
+        'advanced_metrics': advanced
+    }
+
+# --- [전략 비교 함수] ---
+def compare_5mode(df, params):
+    """기존 3모드 vs 5모드 비교 실행."""
     res_orig = backtest_engine_web(df, params)
-    res_upg = backtest_engine_upgraded(df, params)
-    if not res_orig or not res_upg: return None
+    res_5m = backtest_engine_5mode(df, params)
+    if not res_orig or not res_5m: return None
     comp = pd.DataFrame({
         '지표': ['최종자산', 'CAGR (%)', 'MDD (%)', '승률 (%)', '거래수', '수익률 (%)'],
-        '🔵 기존': [f"${res_orig['Final']:,}", res_orig['CAGR'], res_orig['MDD'], res_orig['WinRate'], res_orig['Trades'], res_orig['Return']],
-        '🟢 업그레이드': [f"${res_upg['Final']:,}", res_upg['CAGR'], res_upg['MDD'], res_upg['WinRate'], res_upg['Trades'], res_upg['Return']],
+        '🔵 3모드': [f"${res_orig['Final']:,}", res_orig['CAGR'], res_orig['MDD'], res_orig['WinRate'], res_orig['Trades'], res_orig['Return']],
+        '🟢 5모드': [f"${res_5m['Final']:,}", res_5m['CAGR'], res_5m['MDD'], res_5m['WinRate'], res_5m['Trades'], res_5m['Return']],
     })
-    return {'original': res_orig, 'upgraded': res_upg, 'comparison': comp}
+    return {'original': res_orig, 'fivemode': res_5m, 'comparison': comp}
 
 # --- [UI 구성] ---
 # // UI 개선: 타이틀 + 서브타이틀 구조
@@ -1094,19 +1257,9 @@ if sheet_url:
                         lab_default_w = pd.DataFrame({'Tier': [f'Tier {i}' for i in range(1, 11)], 'Bottom': [10.0]*10, 'Middle': [10.0]*10, 'Ceiling': [10.0]*10}).set_index('Tier')
                         lab_weights = st.data_editor(lab_default_w, key="lab_w_editor", use_container_width=True)
 
-                    with st.expander("🆕 업그레이드 엔진 설정", expanded=False):
-                        lab_use_upgrade = st.checkbox("✅ 업그레이드 엔진 사용", value=False)
-                        ug_c1, ug_c2 = st.columns(2)
-                        lab_dyn_thresh = ug_c1.checkbox("📊 동적 Threshold", value=True)
-                        lab_sigmoid = ug_c2.checkbox("📈 Sigmoid 매수비중", value=True)
-                        lab_adr_filter = ug_c1.checkbox("🔍 ADR+모멘텀 필터", value=True)
-                        lab_compare = ug_c2.checkbox("⚔️ 기존 대비 비교", value=True)
-                        ug_c3, ug_c4, ug_c5 = st.columns(3)
-                        lab_dyn_win = ug_c3.number_input("Threshold 창", value=60, min_value=20, max_value=252)
-                        lab_dyn_mult = ug_c4.number_input("Std 배수", value=1.5, min_value=0.5, max_value=3.0, step=0.1)
-                        lab_sig_steep = ug_c5.number_input("Sigmoid 기울기", value=15.0, min_value=1.0, max_value=50.0, step=1.0)
-                        lab_adr_thresh = ug_c3.number_input("ADR 한계(%)", value=3.5, min_value=1.0, max_value=10.0, step=0.5)
-                        lab_mom_win = ug_c4.number_input("모멘텀 MA 창", value=20, min_value=5, max_value=60)
+                    with st.expander("🆕 5모드 엔진 설정", expanded=False):
+                        lab_use_5mode = st.checkbox("✅ 5모드 엔진 사용 (MA 이격도 전용)", value=False)
+                        lab_compare_5m = st.checkbox("⚔️ 3모드 vs 5모드 비교", value=True)
 
                     lab_run = st.form_submit_button("🚀 백테스트 실행", type="primary", use_container_width=True)
 
@@ -1123,43 +1276,51 @@ if sheet_url:
                         'tier_weights': lab_weights
                     })
 
-                    # [UPGRADE] 업그레이드 파라미터 추가
-                    if lab_use_upgrade:
-                        lab_params.update({
-                            'use_dynamic_thresh': lab_dyn_thresh,
-                            'use_sigmoid': lab_sigmoid,
-                            'use_adr_filter': lab_adr_filter,
-                            'dyn_window': lab_dyn_win,
-                            'dyn_std_mult': lab_dyn_mult,
-                            'sigmoid_steepness': lab_sig_steep,
-                            'adr_threshold': lab_adr_thresh,
-                            'momentum_window': lab_mom_win,
-                        })
-
-                    if lab_use_upgrade and lab_compare:
-                        # --- 비교 모드 ---
-                        comp = compare_strategies(df, lab_params)
+                    if lab_use_5mode and lab_compare_5m:
+                        # --- 3모드 vs 5모드 비교 ---
+                        comp = compare_5mode(df, lab_params)
                         if comp:
-                            st.markdown("### ⚔️ 기존 vs 업그레이드 비교")
+                            st.markdown("### ⚔️ 3모드 vs 5모드 비교")
                             st.dataframe(comp['comparison'], hide_index=True, use_container_width=True)
-                            
+
                             st.subheader("📈 자산 추이 비교")
                             chart_df = pd.DataFrame({
-                                '🔵 기존': comp['original']['Series'],
-                                '🟢 업그레이드': comp['upgraded']['Series']
+                                '🔵 3모드': comp['original']['Series'],
+                                '🟢 5모드': comp['fivemode']['Series']
                             })
                             st.line_chart(chart_df, color=["#6C7B95", "#4ECDC4"])
 
-                            tab_orig_log, tab_upg_log = st.tabs(["🔵 기존 매매기록", "🟢 업그레이드 매매기록"])
-                            with tab_orig_log:
+                            tab_3m, tab_5m = st.tabs(["🔵 3모드 매매기록", "🟢 5모드 매매기록"])
+                            with tab_3m:
                                 st.dataframe(comp['original']['TradeLog'], use_container_width=True, height=300)
-                            with tab_upg_log:
-                                st.dataframe(comp['upgraded']['TradeLog'], use_container_width=True, height=300)
+                            with tab_5m:
+                                st.dataframe(comp['fivemode']['TradeLog'], use_container_width=True, height=300)
+
+                            # 향상된 분석
+                            st.markdown("---")
+                            st.subheader("📊 5모드 심층 분석")
+                            stats = analyze_backtest_results(comp['fivemode'])
+                            if stats:
+                                t_p, t_t, t_y, t_m, t_a = st.tabs(["구간별", "티어별", "연도별", "모드별", "고급 메트릭"])
+                                with t_p: st.dataframe(stats['period_stats'], hide_index=True, use_container_width=True)
+                                with t_t: st.dataframe(stats['tier_stats'], hide_index=True, use_container_width=True)
+                                with t_y: st.dataframe(stats['yearly_stats'], hide_index=True, use_container_width=True)
+                                with t_m: st.dataframe(stats['mode_stats'], hide_index=True, use_container_width=True)
+                                with t_a:
+                                    adv = stats['advanced_metrics']
+                                    ac1, ac2, ac3, ac4 = st.columns(4)
+                                    ac1.metric("Sharpe", adv['Sharpe'])
+                                    ac2.metric("Sortino", adv['Sortino'])
+                                    ac3.metric("최대연속수익", adv['최대연속수익'])
+                                    ac4.metric("최대연속손실", adv['최대연속손실'])
+                                    ac1.metric("총거래수", adv['총거래수'])
+                                    ac2.metric("평균수익", f"${adv['평균수익']:,.2f}")
+                                    ac3.metric("거래빈도", f"{adv['거래빈도(일/건)']}일/건")
                         else:
                             st.error("비교 실행 실패 — 데이터를 확인해주세요.")
                     else:
                         # --- 단일 실행 모드 ---
-                        engine_fn = backtest_engine_upgraded if lab_use_upgrade else backtest_engine_web
+                        engine_fn = backtest_engine_5mode if lab_use_5mode else backtest_engine_web
                         res_lab = engine_fn(df, lab_params)
                         if res_lab:
                             with st.container(border=True):
@@ -1173,6 +1334,27 @@ if sheet_url:
                             st.line_chart(res_lab['Series'], color="#4ECDC4")
                             st.subheader("📜 매매 기록")
                             st.dataframe(res_lab['TradeLog'], use_container_width=True, height=400)
+
+                            # 향상된 분석
+                            st.markdown("---")
+                            st.subheader("📊 심층 분석")
+                            stats = analyze_backtest_results(res_lab)
+                            if stats:
+                                t_p, t_t, t_y, t_m, t_a = st.tabs(["구간별", "티어별", "연도별", "모드별", "고급 메트릭"])
+                                with t_p: st.dataframe(stats['period_stats'], hide_index=True, use_container_width=True)
+                                with t_t: st.dataframe(stats['tier_stats'], hide_index=True, use_container_width=True)
+                                with t_y: st.dataframe(stats['yearly_stats'], hide_index=True, use_container_width=True)
+                                with t_m: st.dataframe(stats['mode_stats'], hide_index=True, use_container_width=True)
+                                with t_a:
+                                    adv = stats['advanced_metrics']
+                                    ac1, ac2, ac3, ac4 = st.columns(4)
+                                    ac1.metric("Sharpe", adv['Sharpe'])
+                                    ac2.metric("Sortino", adv['Sortino'])
+                                    ac3.metric("최대연속수익", adv['최대연속수익'])
+                                    ac4.metric("최대연속손실", adv['최대연속손실'])
+                                    ac1.metric("총거래수", adv['총거래수'])
+                                    ac2.metric("평균수익", f"${adv['평균수익']:,.2f}")
+                                    ac3.metric("거래빈도", f"{adv['거래빈도(일/건)']}일/건")
 
         # --- [탭 3: 몬테카를로 최적화] ---
         with tab_mc:
