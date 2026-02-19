@@ -1454,154 +1454,194 @@ if sheet_url:
                                     ac2.metric("평균수익", f"${adv['평균수익']:,.2f}")
                                     ac3.metric("거래빈도", f"{adv['거래빈도(일/건)']}일/건")
 
+        # === 공통 헬퍼: 점수 계산 ===
+        def _calc_score(res):
+            """CAGR - 2*|MDD| + 0.5*Sharpe"""
+            if not res: return float('-inf'), 0, 0, 0
+            cagr = res.get('CAGR', 0); mdd = res.get('MDD', 0); wr = res.get('WinRate', 0)
+            try:
+                daily_ret = res['Series'].pct_change().dropna()
+                sharpe = (daily_ret.mean() / daily_ret.std()) * (252**0.5) if daily_ret.std() > 0 else 0
+            except: sharpe = 0
+            score = cagr - 2 * abs(mdd) + 0.5 * sharpe
+            return round(score, 2), round(cagr, 2), round(mdd, 2), round(sharpe, 2)
+
+        def _build_mc_params(base_params, mc_type, mc_use_bb, mc_trailing, start, end,
+                             rnd_bc, rnd_cc, rnd_bb, rnd_bp, rnd_bt,
+                             rnd_mb, rnd_mp, rnd_mt, rnd_cb, rnd_cp, rnd_ct, extra_5m=None):
+            p = base_params.copy()
+            p.update({
+                'strategy_type': mc_type, 'use_bb_walk': mc_use_bb,
+                'start_date': start, 'end_date': end, 'trailing_pct': mc_trailing,
+                'bt_cond': rnd_bc, 'cl_cond': rnd_cc,
+                'bt_buy': rnd_bb, 'bt_prof': rnd_bp/100, 'bt_time': rnd_bt,
+                'md_buy': rnd_mb, 'md_prof': rnd_mp/100, 'md_time': rnd_mt,
+                'cl_buy': rnd_cb, 'cl_prof': rnd_cp/100, 'cl_time': rnd_ct
+            })
+            if extra_5m: p.update(extra_5m)
+            return p
+
         # --- [탭 3: 몬테카를로 최적화] ---
         with tab_mc:
             st.subheader("🎲 몬테카를로 시뮬레이션 (전역 최적화)")
-            st.caption("바닥/천장 기준, 매수/익절/존버일을 무작위로 조합하여 최적의 값을 찾습니다.")
-            
+            st.caption("Score = CAGR − 2×|MDD| + 0.5×Sharpe | OOS 검증으로 과최적화 방지")
+
             c_mc1, c_mc2 = st.columns([1, 1])
             with c_mc1:
                 with st.form("mc_form"):
-                    mc_trials = st.number_input("1회 시도 횟수", 10, 2000, 50)
+                    mc_trials = st.number_input("1회 시도 횟수", 10, 5000, 100)
                     mc_type = st.radio("전략 타입", ["MA 이격도", "RSI", "RSI 다이버전스"], horizontal=True)
-                    mc_use_bb = st.checkbox("🌭 볼린저 밴드 익절 지연", value=False)
-                    # // NEW: 5모드 + 트레일링 옵션
-                    mc_use_5mode = st.checkbox("🆕 5모드 엔진 사용 (MA 이격도 전용)", value=False)
-                    mc_trailing = st.number_input("🛑 트레일링 스탑 (%)", 0.0, 100.0, 0.0, step=5.0) / 100
-                    
-                    st.markdown("#### 📅 시뮬레이션 기간 설정")
-                    c_d1, c_d2 = st.columns(2)
-                    mc_start = c_d1.date_input("시작일", value=datetime.date(2010,1,1))
-                    mc_end = c_d2.date_input("종료일", value=datetime.date.today())
-                    
-                    st.markdown("#### 🎯 3모드 랜덤 범위")
-                    
-                    with st.expander("1. 진입/탈출 기준 (Threshold)", expanded=True):
+                    mc_use_bb = st.checkbox("🌭 BB Walk", value=False)
+                    mc_use_5mode = st.checkbox("🆕 5모드 엔진 (MA 이격도 전용)", value=False)
+                    mc_trailing = st.number_input("🛑 트레일링 (%)", 0.0, 100.0, 0.0, step=5.0) / 100
+
+                    st.markdown("#### 📅 기간")
+                    cd1, cd2 = st.columns(2)
+                    mc_start = cd1.date_input("시작일", value=datetime.date(2010,1,1), key="mc_s")
+                    mc_end = cd2.date_input("종료일", value=datetime.date.today(), key="mc_e")
+
+                    # // NEW: OOS 과최적화 방지 설정
+                    st.markdown("#### 🛡️ 과최적화 방지")
+                    mc_use_oos = st.checkbox("📊 OOS (Out-of-Sample) 검증", value=True)
+                    mc_oos_split = st.date_input("IS→OOS 분기일", value=datetime.date(2022,1,1), key="mc_oos_dt",
+                                                  help="이 날짜까지 IS(학습), 이후 OOS(검증)")
+                    mc_use_wfo = st.checkbox("🔄 Walk-Forward 분석", value=False)
+                    cwf1, cwf2 = st.columns(2)
+                    mc_wfo_win = cwf1.number_input("WFO 윈도우(년)", 2, 8, 3, key="mc_wfw")
+                    mc_wfo_step = cwf2.number_input("WFO 스텝(년)", 1, 3, 1, key="mc_wfs")
+
+                    st.markdown("#### 🎯 3모드 범위")
+                    with st.expander("진입/탈출 기준", expanded=True):
                         c1, c2 = st.columns(2)
                         if mc_type.startswith('RSI'):
-                            r_bc_min = c1.number_input("바닥 기준(Min)", value=25.0); r_bc_max = c2.number_input("바닥 기준(Max)", value=35.0)
-                            r_cc_min = c1.number_input("천장 기준(Min)", value=70.0); r_cc_max = c2.number_input("천장 기준(Max)", value=80.0)
+                            r_bc_min = c1.number_input("바닥(Min)", value=25.0); r_bc_max = c2.number_input("바닥(Max)", value=35.0)
+                            r_cc_min = c1.number_input("천장(Min)", value=70.0); r_cc_max = c2.number_input("천장(Max)", value=80.0)
                         else:
-                            r_bc_min = c1.number_input("바닥 기준(Min)", value=0.85); r_bc_max = c2.number_input("바닥 기준(Max)", value=0.95)
-                            r_cc_min = c1.number_input("천장 기준(Min)", value=1.05); r_cc_max = c2.number_input("천장 기준(Max)", value=1.15)
-
-                    with st.expander("2. 바닥 (Bottom) 설정 범위", expanded=False):
+                            r_bc_min = c1.number_input("바닥(Min)", value=0.85); r_bc_max = c2.number_input("바닥(Max)", value=0.95)
+                            r_cc_min = c1.number_input("천장(Min)", value=1.05); r_cc_max = c2.number_input("천장(Max)", value=1.15)
+                    with st.expander("바닥/중간/천장", expanded=False):
                         c1, c2 = st.columns(2)
-                        r_bb_min = c1.number_input("바닥 매수%(Min)", value=10.0); r_bb_max = c2.number_input("바닥 매수%(Max)", value=20.0)
-                        r_bp_min = c1.number_input("바닥 익절%(Min)", value=3.0); r_bp_max = c2.number_input("바닥 익절%(Max)", value=10.0)
-                        r_bt_min = c1.number_input("바닥 존버(Min)", value=10, step=1); r_bt_max = c2.number_input("바닥 존버(Max)", value=40, step=1)
-
-                    with st.expander("3. 중간 (Middle) 설정 범위", expanded=False):
+                        r_bb_min=c1.number_input("B매수%(Min)",value=10.0);r_bb_max=c2.number_input("B매수%(Max)",value=20.0)
+                        r_bp_min=c1.number_input("B익절%(Min)",value=3.0);r_bp_max=c2.number_input("B익절%(Max)",value=10.0)
+                        r_bt_min=c1.number_input("B존버(Min)",value=10,step=1);r_bt_max=c2.number_input("B존버(Max)",value=40,step=1)
+                        r_mb_min=c1.number_input("M매수%(Min)",value=-2.0);r_mb_max=c2.number_input("M매수%(Max)",value=2.0)
+                        r_mp_min=c1.number_input("M익절%(Min)",value=2.0);r_mp_max=c2.number_input("M익절%(Max)",value=8.0)
+                        r_mt_min=c1.number_input("M존버(Min)",value=10,step=1);r_mt_max=c2.number_input("M존버(Max)",value=30,step=1)
+                        r_cb_min=c1.number_input("C매수%(Min)",value=-10.0);r_cb_max=c2.number_input("C매수%(Max)",value=-5.0)
+                        r_cp_min=c1.number_input("C익절%(Min)",value=1.0);r_cp_max=c2.number_input("C익절%(Max)",value=5.0)
+                        r_ct_min=c1.number_input("C존버(Min)",value=20,step=1);r_ct_max=c2.number_input("C존버(Max)",value=60,step=1)
+                    with st.expander("5모드 범위 (MA 전용)", expanded=False):
                         c1, c2 = st.columns(2)
-                        r_mb_min = c1.number_input("중간 매수%(Min)", value=-2.0); r_mb_max = c2.number_input("중간 매수%(Max)", value=2.0)
-                        r_mp_min = c1.number_input("중간 익절%(Min)", value=2.0); r_mp_max = c2.number_input("중간 익절%(Max)", value=8.0)
-                        r_mt_min = c1.number_input("중간 존버(Min)", value=10, step=1); r_mt_max = c2.number_input("중간 존버(Max)", value=30, step=1)
-
-                    with st.expander("4. 천장 (Ceiling) 설정 범위", expanded=False):
-                        c1, c2 = st.columns(2)
-                        r_cb_min = c1.number_input("천장 매수%(Min)", value=-10.0); r_cb_max = c2.number_input("천장 매수%(Max)", value=-5.0)
-                        r_cp_min = c1.number_input("천장 익절%(Min)", value=1.0); r_cp_max = c2.number_input("천장 익절%(Max)", value=5.0)
-                        r_ct_min = c1.number_input("천장 존버(Min)", value=20, step=1); r_ct_max = c2.number_input("천장 존버(Max)", value=60, step=1)
-
-                    # // NEW: 5모드 파라미터 범위
-                    with st.expander("5. 🆕 5모드 파라미터 범위 (MA 이격도 전용)", expanded=False):
-                        st.caption("5모드 ON 시에만 적용됩니다.")
-                        st.markdown("**🟥 PANIC_BOTTOM**")
-                        c1, c2 = st.columns(2)
-                        r_pb_min = c1.number_input("PANIC 매수%(Min)", value=-10.0); r_pb_max = c2.number_input("PANIC 매수%(Max)", value=30.0)
-                        r_pp_min = c1.number_input("PANIC 익절%(Min)", value=2.0); r_pp_max = c2.number_input("PANIC 익절%(Max)", value=6.0)
-                        r_pt_min = c1.number_input("PANIC 존버(Min)", value=5, step=1); r_pt_max = c2.number_input("PANIC 존버(Max)", value=15, step=1)
-                        st.markdown("**🟡 BEARISH**")
-                        c1, c2 = st.columns(2)
-                        r_brb_min = c1.number_input("BEAR 매수%(Min)", value=-5.0); r_brb_max = c2.number_input("BEAR 매수%(Max)", value=5.0)
-                        r_brp_min = c1.number_input("BEAR 익절%(Min)", value=1.0); r_brp_max = c2.number_input("BEAR 익절%(Max)", value=4.0)
-                        r_brt_min = c1.number_input("BEAR 존버(Min)", value=15, step=1); r_brt_max = c2.number_input("BEAR 존버(Max)", value=35, step=1)
-                        st.markdown("**🎯 분류 Threshold**")
-                        c1, c2 = st.columns(2)
-                        r_pd_min = c1.number_input("PANIC disp(Min)", value=0.75); r_pd_max = c2.number_input("PANIC disp(Max)", value=0.90)
-                        r_pr_min = c1.number_input("PANIC RSI(Min)", value=20.0); r_pr_max = c2.number_input("PANIC RSI(Max)", value=35.0)
-                        r_brd_min = c1.number_input("BEAR disp(Min)", value=1.02); r_brd_max = c2.number_input("BEAR disp(Max)", value=1.12)
-                        r_brr_min = c1.number_input("BEAR RSI(Min)", value=55.0); r_brr_max = c2.number_input("BEAR RSI(Max)", value=70.0)
+                        r_pb_min=c1.number_input("P매수%(Min)",value=-10.0);r_pb_max=c2.number_input("P매수%(Max)",value=30.0)
+                        r_pp_min=c1.number_input("P익절%(Min)",value=2.0);r_pp_max=c2.number_input("P익절%(Max)",value=6.0)
+                        r_pt_min=c1.number_input("P존버(Min)",value=5,step=1);r_pt_max=c2.number_input("P존버(Max)",value=15,step=1)
+                        r_brb_min=c1.number_input("BR매수%(Min)",value=-5.0);r_brb_max=c2.number_input("BR매수%(Max)",value=5.0)
+                        r_brp_min=c1.number_input("BR익절%(Min)",value=1.0);r_brp_max=c2.number_input("BR익절%(Max)",value=4.0)
+                        r_brt_min=c1.number_input("BR존버(Min)",value=15,step=1);r_brt_max=c2.number_input("BR존버(Max)",value=35,step=1)
+                        r_pd_min=c1.number_input("PDisp(Min)",value=0.75);r_pd_max=c2.number_input("PDisp(Max)",value=0.90)
+                        r_pr_min=c1.number_input("PRSI(Min)",value=20.0);r_pr_max=c2.number_input("PRSI(Max)",value=35.0)
+                        r_brd_min=c1.number_input("BRDisp(Min)",value=1.02);r_brd_max=c2.number_input("BRDisp(Max)",value=1.12)
+                        r_brr_min=c1.number_input("BRRSI(Min)",value=55.0);r_brr_max=c2.number_input("BRRSI(Max)",value=70.0)
 
                     mc_run = st.form_submit_button("🎲 시뮬레이션 시작")
-                
-                if st.button("🗑️ 기록 초기화 (Reset)"):
+
+                if st.button("🗑️ 기록 초기화"):
                     st.session_state.opt_results = pd.DataFrame()
-                    st.success("기록이 초기화되었습니다.")
+                    st.success("초기화됨")
 
             with c_mc2:
                 if mc_run:
                     new_results = []
                     bar = st.progress(0)
                     is_5mode = mc_use_5mode and mc_type == 'MA 이격도'
+
                     for i in range(mc_trials):
-                        rnd_bc = random.uniform(r_bc_min, r_bc_max)
-                        rnd_cc = random.uniform(r_cc_min, r_cc_max)
-                        rnd_bb = random.uniform(r_bb_min, r_bb_max)
-                        rnd_bp = random.uniform(r_bp_min, r_bp_max)
-                        rnd_bt = random.randint(int(r_bt_min), int(r_bt_max))
-                        rnd_mb = random.uniform(r_mb_min, r_mb_max)
-                        rnd_mp = random.uniform(r_mp_min, r_mp_max)
-                        rnd_mt = random.randint(int(r_mt_min), int(r_mt_max))
-                        rnd_cb = random.uniform(r_cb_min, r_cb_max)
-                        rnd_cp = random.uniform(r_cp_min, r_cp_max)
-                        rnd_ct = random.randint(int(r_ct_min), int(r_ct_max))
-                        
-                        mc_params = params_s.copy()
-                        mc_params.update({
-                            'strategy_type': mc_type, 'use_bb_walk': mc_use_bb,
-                            'start_date': mc_start, 'end_date': mc_end,
-                            'trailing_pct': mc_trailing,
-                            'bt_cond': rnd_bc, 'cl_cond': rnd_cc,
-                            'bt_buy': rnd_bb, 'bt_prof': rnd_bp/100, 'bt_time': rnd_bt,
-                            'md_buy': rnd_mb, 'md_prof': rnd_mp/100, 'md_time': rnd_mt,
-                            'cl_buy': rnd_cb, 'cl_prof': rnd_cp/100, 'cl_time': rnd_ct
-                        })
-                        
-                        # // NEW: 5모드 파라미터 샘플링
+                        rnd_bc=random.uniform(r_bc_min,r_bc_max);rnd_cc=random.uniform(r_cc_min,r_cc_max)
+                        rnd_bb=random.uniform(r_bb_min,r_bb_max);rnd_bp=random.uniform(r_bp_min,r_bp_max);rnd_bt=random.randint(int(r_bt_min),int(r_bt_max))
+                        rnd_mb=random.uniform(r_mb_min,r_mb_max);rnd_mp=random.uniform(r_mp_min,r_mp_max);rnd_mt=random.randint(int(r_mt_min),int(r_mt_max))
+                        rnd_cb=random.uniform(r_cb_min,r_cb_max);rnd_cp=random.uniform(r_cp_min,r_cp_max);rnd_ct=random.randint(int(r_ct_min),int(r_ct_max))
+
+                        extra_5m = None
                         row_extra = {}
                         if is_5mode:
-                            rnd_pb = random.uniform(r_pb_min, r_pb_max)
-                            rnd_pp = random.uniform(r_pp_min, r_pp_max)
-                            rnd_pt = random.randint(int(r_pt_min), int(r_pt_max))
-                            rnd_brb = random.uniform(r_brb_min, r_brb_max)
-                            rnd_brp = random.uniform(r_brp_min, r_brp_max)
-                            rnd_brt = random.randint(int(r_brt_min), int(r_brt_max))
-                            rnd_pd = random.uniform(r_pd_min, r_pd_max)
-                            rnd_pr = random.uniform(r_pr_min, r_pr_max)
-                            rnd_brd = random.uniform(r_brd_min, r_brd_max)
-                            rnd_brr = random.uniform(r_brr_min, r_brr_max)
-                            mc_params.update({
-                                'panic_buy': rnd_pb, 'panic_prof': rnd_pp/100, 'panic_time': rnd_pt,
-                                'bear_buy': rnd_brb, 'bear_prof': rnd_brp/100, 'bear_time': rnd_brt,
-                                'panic_disp_th': rnd_pd, 'panic_rsi_th': rnd_pr,
-                                'bear_disp_th': rnd_brd, 'bear_rsi_th': rnd_brr,
-                            })
-                            row_extra = {
-                                'P_Buy': round(rnd_pb,1), 'P_Prof': round(rnd_pp,1), 'P_Time': rnd_pt,
-                                'BR_Buy': round(rnd_brb,1), 'BR_Prof': round(rnd_brp,1), 'BR_Time': rnd_brt,
+                            rnd_pb=random.uniform(r_pb_min,r_pb_max);rnd_pp=random.uniform(r_pp_min,r_pp_max);rnd_pt=random.randint(int(r_pt_min),int(r_pt_max))
+                            rnd_brb=random.uniform(r_brb_min,r_brb_max);rnd_brp=random.uniform(r_brp_min,r_brp_max);rnd_brt=random.randint(int(r_brt_min),int(r_brt_max))
+                            rnd_pd=random.uniform(r_pd_min,r_pd_max);rnd_pr=random.uniform(r_pr_min,r_pr_max)
+                            rnd_brd=random.uniform(r_brd_min,r_brd_max);rnd_brr=random.uniform(r_brr_min,r_brr_max)
+                            extra_5m = {
+                                'panic_buy':rnd_pb,'panic_prof':rnd_pp/100,'panic_time':rnd_pt,
+                                'bear_buy':rnd_brb,'bear_prof':rnd_brp/100,'bear_time':rnd_brt,
+                                'panic_disp_th':rnd_pd,'panic_rsi_th':rnd_pr,'bear_disp_th':rnd_brd,'bear_rsi_th':rnd_brr,
                             }
-                        
+                            row_extra = {'P_Buy':round(rnd_pb,1),'P_Prof':round(rnd_pp,1),'P_Time':rnd_pt,
+                                         'BR_Buy':round(rnd_brb,1),'BR_Prof':round(rnd_brp,1),'BR_Time':rnd_brt}
+
                         engine_fn = backtest_engine_5mode if is_5mode else backtest_engine_web
-                        res = engine_fn(df, mc_params)
-                        if res:
-                            score = res['CAGR'] - 2 * abs(res['MDD'])
-                            row = {
-                                'Type': mc_type + (' 5M' if is_5mode else ''),
-                                'Bot_Ref': round(rnd_bc, 2), 'Ceil_Ref': round(rnd_cc, 2),
-                                'B_Buy': round(rnd_bb, 1), 'B_Prof': round(rnd_bp, 1), 'B_Time': rnd_bt,
-                                'M_Buy': round(rnd_mb, 1), 'M_Prof': round(rnd_mp, 1), 'M_Time': rnd_mt,
-                                'C_Buy': round(rnd_cb, 1), 'C_Prof': round(rnd_cp, 1), 'C_Time': rnd_ct,
-                                **row_extra,
-                                'CAGR': res['CAGR'], 'MDD': res['MDD'], 'Score': round(score, 2)
-                            }
-                            new_results.append(row)
-                        bar.progress((i + 1) / mc_trials)
-                    
+
+                        # IS 기간
+                        is_end = mc_oos_split if mc_use_oos else mc_end
+                        mc_params = _build_mc_params(params_s, mc_type, mc_use_bb, mc_trailing,
+                                                     mc_start, is_end, rnd_bc, rnd_cc,
+                                                     rnd_bb, rnd_bp, rnd_bt, rnd_mb, rnd_mp, rnd_mt,
+                                                     rnd_cb, rnd_cp, rnd_ct, extra_5m)
+                        try: res_is = engine_fn(df, mc_params)
+                        except: res_is = None
+                        is_score, is_cagr, is_mdd, is_sharpe = _calc_score(res_is)
+                        if is_score <= float('-inf'): bar.progress((i+1)/mc_trials); continue
+
+                        # OOS 기간
+                        oos_score = 0; oos_cagr = 0; oos_mdd = 0
+                        if mc_use_oos:
+                            mc_params_oos = mc_params.copy()
+                            mc_params_oos['start_date'] = mc_oos_split
+                            mc_params_oos['end_date'] = mc_end
+                            try: res_oos = engine_fn(df, mc_params_oos)
+                            except: res_oos = None
+                            oos_score, oos_cagr, oos_mdd, _ = _calc_score(res_oos)
+
+                        # WFO (Walk-Forward)
+                        wfo_score = 0
+                        if mc_use_wfo:
+                            wfo_scores = []
+                            yr_start = mc_start.year
+                            yr_end = mc_end.year
+                            for ws in range(yr_start, yr_end - mc_wfo_win, mc_wfo_step):
+                                is_s = datetime.date(ws, 1, 1)
+                                is_e = datetime.date(ws + mc_wfo_win, 1, 1)
+                                oos_s = is_e
+                                oos_e = datetime.date(min(ws + mc_wfo_win + mc_wfo_step, yr_end), 12, 31)
+                                if oos_s >= oos_e: continue
+                                p_wfo = mc_params.copy()
+                                p_wfo['start_date'] = oos_s; p_wfo['end_date'] = oos_e
+                                try: r_wfo = engine_fn(df, p_wfo)
+                                except: r_wfo = None
+                                s, _, _, _ = _calc_score(r_wfo)
+                                if s > float('-inf'): wfo_scores.append(s)
+                            wfo_score = round(np.mean(wfo_scores), 2) if wfo_scores else 0
+
+                        # 안정성 점수
+                        oos_ratio = oos_cagr / is_cagr if is_cagr != 0 and mc_use_oos else 1.0
+                        stability = round(min(max(oos_ratio, 0), 2.0), 2)
+
+                        row = {
+                            'Type': mc_type + (' 5M' if is_5mode else ''),
+                            'B_Ref':round(rnd_bc,2),'C_Ref':round(rnd_cc,2),
+                            'B_Buy':round(rnd_bb,1),'B_Prof':round(rnd_bp,1),'B_Time':rnd_bt,
+                            'M_Buy':round(rnd_mb,1),'M_Prof':round(rnd_mp,1),'M_Time':rnd_mt,
+                            'C_Buy':round(rnd_cb,1),'C_Prof':round(rnd_cp,1),'C_Time':rnd_ct,
+                            **row_extra,
+                            'IS_CAGR':is_cagr,'IS_MDD':is_mdd,'IS_Score':is_score,
+                            'OOS_CAGR':oos_cagr,'OOS_MDD':oos_mdd,'OOS_Score':oos_score,
+                            'WFO':wfo_score,'Stab':stability,
+                            'Score': round(is_score * 0.4 + oos_score * 0.4 + wfo_score * 0.2, 2) if mc_use_oos else is_score
+                        }
+                        new_results.append(row)
+                        bar.progress((i+1)/mc_trials)
+
                     if new_results:
                         new_df = pd.DataFrame(new_results)
                         if not st.session_state.opt_results.empty:
-                            if list(new_df.columns) != list(st.session_state.opt_results.columns):
+                            if set(new_df.columns) != set(st.session_state.opt_results.columns):
                                 st.session_state.opt_results = new_df
                             else:
                                 st.session_state.opt_results = pd.concat([st.session_state.opt_results, new_df], ignore_index=True)
@@ -1610,24 +1650,38 @@ if sheet_url:
                         st.session_state.opt_results = st.session_state.opt_results.drop_duplicates().sort_values('Score', ascending=False)
 
                 if isinstance(st.session_state.opt_results, pd.DataFrame) and not st.session_state.opt_results.empty:
-                    st.write(f"🏆 **전역 최적화 랭킹 (TOP 10)** — Score = CAGR − 2×|MDD|")
-                    st.dataframe(st.session_state.opt_results.head(10), use_container_width=True)
-                    
-                    best = st.session_state.opt_results.iloc[0]
-                    with st.expander("🌟 [BEST] 상세 파라미터 보기", expanded=True):
-                        c1, c2, c3 = st.columns(3)
-                        c1.info(f"**📉 바닥 모드**\n- 기준: {best['Bot_Ref']}\n- 매수: {best['B_Buy']}%\n- 익절: {best['B_Prof']}%\n- 존버: {best['B_Time']}일")
-                        c2.warning(f"**➖ 중간 모드**\n- 매수: {best['M_Buy']}%\n- 익절: {best['M_Prof']}%\n- 존버: {best['M_Time']}일")
-                        c3.error(f"**📈 천장 모드**\n- 기준: {best['Ceil_Ref']}\n- 매수: {best['C_Buy']}%\n- 익절: {best['C_Prof']}%\n- 존버: {best['C_Time']}일")
-                        if 'P_Buy' in best.index:
-                            c1.success(f"**🟥 PANIC**\n- 매수: {best['P_Buy']}%\n- 익절: {best['P_Prof']}%\n- 존버: {best['P_Time']}일")
-                            c2.success(f"**🟡 BEARISH**\n- 매수: {best['BR_Buy']}%\n- 익절: {best['BR_Prof']}%\n- 존버: {best['BR_Time']}일")
-                        st.success(f"📊 **성과: CAGR {best['CAGR']:.2f}% / MDD {best['MDD']:.2f}% / Score {best['Score']:.2f}**")
+                    st.write("🏆 **TOP 10** — Score = 0.4×IS + 0.4×OOS + 0.2×WFO")
+                    show_cols = [c for c in ['Type','B_Ref','C_Ref','IS_CAGR','IS_MDD','OOS_CAGR','OOS_MDD','WFO','Stab','Score'] if c in st.session_state.opt_results.columns]
+                    st.dataframe(st.session_state.opt_results[show_cols].head(10), use_container_width=True)
 
+                    best = st.session_state.opt_results.iloc[0]
+                    with st.expander("🌟 BEST 상세", expanded=True):
+                        c1, c2, c3 = st.columns(3)
+                        c1.info(f"**📉 바닥**\n- 기준: {best.get('B_Ref','')}\n- 매수: {best['B_Buy']}%\n- 익절: {best['B_Prof']}%\n- 존버: {best['B_Time']}일")
+                        c2.warning(f"**➖ 중간**\n- 매수: {best['M_Buy']}%\n- 익절: {best['M_Prof']}%\n- 존버: {best['M_Time']}일")
+                        c3.error(f"**📈 천장**\n- 기준: {best.get('C_Ref','')}\n- 매수: {best['C_Buy']}%\n- 익절: {best['C_Prof']}%\n- 존버: {best['C_Time']}일")
+                        if 'P_Buy' in best.index:
+                            c1.success(f"**🟥 PANIC**\n- 매수:{best['P_Buy']}%\n- 익절:{best['P_Prof']}%\n- 존버:{best['P_Time']}일")
+                            c2.success(f"**🟡 BEAR**\n- 매수:{best['BR_Buy']}%\n- 익절:{best['BR_Prof']}%\n- 존버:{best['BR_Time']}일")
+                        st.success(f"📊 IS: {best['IS_CAGR']}%/{best['IS_MDD']}% | OOS: {best['OOS_CAGR']}%/{best['OOS_MDD']}% | 안정성: {best['Stab']} | Score: {best['Score']}")
+
+                    # 상위10 통계
+                    top10 = st.session_state.opt_results.head(10)
+                    st.markdown("#### 📈 상위10 파라미터 평균 ± std")
+                    num_cols = [c for c in top10.select_dtypes(include=[np.number]).columns if c not in ['Score','IS_Score','OOS_Score','WFO','Stab']]
+                    if num_cols:
+                        stats_df = pd.DataFrame({'Mean': top10[num_cols].mean().round(2), 'Std': top10[num_cols].std().round(2)})
+                        stats_df['CV%'] = (stats_df['Std'] / stats_df['Mean'].abs().replace(0, 1) * 100).round(1)
+                        st.dataframe(stats_df, use_container_width=True)
+
+                    # 산점도
                     fig, ax = plt.subplots(figsize=(8, 5))
-                    sc = ax.scatter(st.session_state.opt_results['MDD'], st.session_state.opt_results['CAGR'], c=st.session_state.opt_results['Score'], cmap='viridis', alpha=0.6)
+                    data = st.session_state.opt_results
+                    sc = ax.scatter(data['IS_MDD'], data['IS_CAGR'], c=data['Score'], cmap='viridis', alpha=0.5, label='IS')
+                    if 'OOS_MDD' in data.columns and data['OOS_CAGR'].abs().sum() > 0:
+                        ax.scatter(data['OOS_MDD'], data['OOS_CAGR'], marker='x', c='red', alpha=0.3, label='OOS', s=20)
                     ax.set_xlabel('MDD (%)'); ax.set_ylabel('CAGR (%)')
-                    ax.set_title('Risk vs Return (Score = CAGR − 2×|MDD|)')
+                    ax.set_title('IS vs OOS (Score color)'); ax.legend()
                     plt.colorbar(sc, label='Score')
                     st.pyplot(fig, use_container_width=True)
 
@@ -1641,11 +1695,11 @@ if sheet_url:
                 _HAS_OPTUNA = False
 
             if not _HAS_OPTUNA:
-                st.error("⚠️ Optuna가 설치되어 있지 않습니다. `pip install optuna` 실행 후 새로고침해주세요.")
+                st.error("⚠️ Optuna 미설치. `pip install optuna` 실행 후 새로고침.")
                 st.code("pip install optuna", language="bash")
             else:
                 st.subheader("🚀 Optuna 베이지안 최적화")
-                st.caption("TPE (Tree-structured Parzen Estimator) 알고리즘으로 몬테카를로보다 10배 빠르게 최적 파라미터를 탐색합니다.")
+                st.caption("TPE + OOS 검증 + Cross-Validation으로 과최적화 방지")
 
                 if 'optuna_results' not in st.session_state: st.session_state.optuna_results = None
                 if 'optuna_study' not in st.session_state: st.session_state.optuna_study = None
@@ -1653,7 +1707,7 @@ if sheet_url:
                 c_opt1, c_opt2 = st.columns([1, 1])
                 with c_opt1:
                     with st.form("optuna_form"):
-                        opt_trials = st.number_input("시도 횟수", 50, 1000, 200, step=50)
+                        opt_trials = st.number_input("시도 횟수", 50, 1000, 200, step=50, key="opt_n")
                         opt_type = st.radio("전략 타입", ["MA 이격도", "RSI", "RSI 다이버전스"], horizontal=True, key="opt_type")
                         opt_use_bb = st.checkbox("🌭 BB Walk", value=False, key="opt_bb")
                         opt_use_5mode = st.checkbox("🆕 5모드 (MA 이격도 전용)", value=False, key="opt_5mode")
@@ -1664,9 +1718,15 @@ if sheet_url:
                         opt_start = oc1.date_input("시작일", value=datetime.date(2010,1,1), key="opt_start")
                         opt_end = oc2.date_input("종료일", value=datetime.date.today(), key="opt_end")
 
-                        st.markdown("#### 🎯 목표 함수")
-                        opt_objective = st.selectbox("최적화 목표", ["CAGR − 3×|MDD| (균형)", "CAGR 최대화", "MDD 최소화", "Sharpe 최대화"], key="opt_obj")
-                        
+                        st.markdown("#### 🛡️ 과최적화 방지")
+                        opt_use_oos = st.checkbox("📊 OOS 검증", value=True, key="opt_oos")
+                        opt_oos_split = st.date_input("IS→OOS 분기일", value=datetime.date(2022,1,1), key="opt_oos_dt")
+                        opt_use_cv = st.checkbox("🔀 시계열 Cross-Validation (5-fold)", value=False, key="opt_cv")
+                        opt_repeat = st.number_input("🔁 반복 횟수 (안정성)", 1, 5, 1, key="opt_rep")
+
+                        st.markdown("#### 🎯 목표")
+                        opt_objective = st.selectbox("최적화 목표", ["CAGR−2|MDD|+0.5Sharpe (균형)", "CAGR 최대화", "MDD 최소화", "Sharpe 최대화"], key="opt_obj")
+
                         opt_run = st.form_submit_button("🚀 최적화 시작", type="primary")
 
                 with c_opt2:
@@ -1677,7 +1737,6 @@ if sheet_url:
                         trial_counter = {'n': 0}
 
                         def optuna_objective(trial):
-                            # 3모드 공통 파라미터
                             if opt_type.startswith('RSI'):
                                 bt_cond = trial.suggest_float('bt_cond', 25, 35)
                                 cl_cond = trial.suggest_float('cl_cond', 70, 80)
@@ -1695,9 +1754,10 @@ if sheet_url:
                             cl_time = trial.suggest_int('cl_time', 15, 60)
 
                             p = params_s.copy()
+                            is_end_dt = opt_oos_split if opt_use_oos else opt_end
                             p.update({
                                 'strategy_type': opt_type, 'use_bb_walk': opt_use_bb,
-                                'start_date': opt_start, 'end_date': opt_end,
+                                'start_date': opt_start, 'end_date': is_end_dt,
                                 'trailing_pct': opt_trailing,
                                 'bt_cond': bt_cond, 'cl_cond': cl_cond,
                                 'bt_buy': bt_buy, 'bt_prof': bt_prof/100, 'bt_time': bt_time,
@@ -1705,7 +1765,6 @@ if sheet_url:
                                 'cl_buy': cl_buy, 'cl_prof': cl_prof/100, 'cl_time': cl_time,
                             })
 
-                            # 5모드 추가 파라미터
                             if is_5mode_opt:
                                 p.update({
                                     'panic_buy': trial.suggest_float('panic_buy', -10, 30),
@@ -1724,114 +1783,155 @@ if sheet_url:
                                 })
 
                             engine_fn = backtest_engine_5mode if is_5mode_opt else backtest_engine_web
-                            try:
-                                res = engine_fn(df, p)
-                            except:
-                                return float('-inf')
-                            if not res: return float('-inf')
 
-                            cagr = res['CAGR']; mdd = res['MDD']
-                            wr = res.get('WinRate', 0)
+                            # IS 백테스트
+                            try: res_is = engine_fn(df, p)
+                            except: return float('-inf')
+                            if not res_is: return float('-inf')
+                            is_score, is_cagr, is_mdd, is_sharpe = _calc_score(res_is)
 
-                            # Sharpe 간이 계산
-                            try:
-                                daily_ret = res['Series'].pct_change().dropna()
-                                sharpe = (daily_ret.mean() / daily_ret.std()) * (252**0.5) if daily_ret.std() > 0 else 0
-                            except:
-                                sharpe = 0
+                            # OOS 백테스트
+                            oos_score = 0; oos_cagr = 0
+                            if opt_use_oos:
+                                p_oos = p.copy()
+                                p_oos['start_date'] = opt_oos_split; p_oos['end_date'] = opt_end
+                                try: res_oos = engine_fn(df, p_oos)
+                                except: res_oos = None
+                                oos_score, oos_cagr, _, _ = _calc_score(res_oos)
 
-                            trial.set_user_attr('CAGR', cagr)
-                            trial.set_user_attr('MDD', mdd)
-                            trial.set_user_attr('WinRate', wr)
-                            trial.set_user_attr('Sharpe', round(sharpe, 2))
+                            # CV (시계열 5-fold)
+                            cv_score = 0
+                            if opt_use_cv:
+                                total_days = (opt_end - opt_start).days
+                                fold_size = total_days // 5
+                                cv_scores = []
+                                for fold in range(5):
+                                    val_start = opt_start + datetime.timedelta(days=fold_size * fold)
+                                    val_end = val_start + datetime.timedelta(days=fold_size)
+                                    if val_end > opt_end: val_end = opt_end
+                                    p_cv = p.copy()
+                                    p_cv['start_date'] = val_start; p_cv['end_date'] = val_end
+                                    try: r_cv = engine_fn(df, p_cv)
+                                    except: r_cv = None
+                                    s, _, _, _ = _calc_score(r_cv)
+                                    if s > float('-inf'): cv_scores.append(s)
+                                cv_score = np.mean(cv_scores) if cv_scores else 0
+
+                            trial.set_user_attr('IS_CAGR', is_cagr)
+                            trial.set_user_attr('IS_MDD', is_mdd)
+                            trial.set_user_attr('IS_Sharpe', is_sharpe)
+                            trial.set_user_attr('OOS_CAGR', oos_cagr)
+                            trial.set_user_attr('OOS_Score', oos_score)
+                            trial.set_user_attr('CV_Score', round(cv_score, 2))
+                            trial.set_user_attr('WinRate', res_is.get('WinRate', 0))
+
+                            oos_ratio = oos_cagr / is_cagr if is_cagr != 0 and opt_use_oos else 1.0
+                            stability = min(max(oos_ratio, 0), 2.0)
+                            trial.set_user_attr('Stability', round(stability, 2))
 
                             trial_counter['n'] += 1
                             bar.progress(min(trial_counter['n'] / opt_trials, 1.0))
                             try:
                                 best_v = trial.study.best_value
-                                status_box.caption(f"⏳ {trial_counter['n']}/{opt_trials} 완료 — 현재 최고 Score: {best_v:.2f}")
+                                status_box.caption(f"⏳ {trial_counter['n']}/{opt_trials} — Best: {best_v:.2f}")
                             except ValueError:
-                                status_box.caption(f"⏳ {trial_counter['n']}/{opt_trials} 완료")
+                                status_box.caption(f"⏳ {trial_counter['n']}/{opt_trials}")
 
-                            if opt_objective.startswith("CAGR −"):
-                                return cagr - 3 * abs(mdd)
+                            # 최종 점수
+                            if opt_objective.startswith("CAGR−"):
+                                final = is_score
+                                if opt_use_oos: final = is_score * 0.4 + oos_score * 0.4 + cv_score * 0.2 if opt_use_cv else is_score * 0.5 + oos_score * 0.5
+                                return final
                             elif opt_objective == "CAGR 최대화":
-                                return cagr
+                                return is_cagr if not opt_use_oos else (is_cagr * 0.5 + oos_cagr * 0.5)
                             elif opt_objective == "MDD 최소화":
-                                return -abs(mdd)
-                            else:  # Sharpe
-                                return sharpe
+                                return -abs(is_mdd)
+                            else:
+                                return is_sharpe
 
-                        study = optuna.create_study(direction='maximize', study_name='soxl_opt')
-                        study.optimize(optuna_objective, n_trials=opt_trials, show_progress_bar=False)
-                        st.session_state.optuna_study = study
+                        # 반복 실행
+                        all_studies = []
+                        for rep in range(opt_repeat):
+                            if opt_repeat > 1: status_box.caption(f"🔁 반복 {rep+1}/{opt_repeat}")
+                            trial_counter['n'] = 0
+                            study = optuna.create_study(direction='maximize', study_name=f'soxl_opt_r{rep}')
+                            study.optimize(optuna_objective, n_trials=opt_trials, show_progress_bar=False)
+                            all_studies.append(study)
+                        st.session_state.optuna_study = all_studies[-1]
 
-                        # 결과 수집
+                        # 결과 수집 (전체 반복 통합)
                         rows = []
-                        for t in study.trials:
-                            if t.state == optuna.trial.TrialState.COMPLETE:
-                                row = {**t.params}
-                                row['CAGR'] = t.user_attrs.get('CAGR', 0)
-                                row['MDD'] = t.user_attrs.get('MDD', 0)
-                                row['WinRate'] = t.user_attrs.get('WinRate', 0)
-                                row['Sharpe'] = t.user_attrs.get('Sharpe', 0)
-                                row['Score'] = round(t.value, 2)
-                                rows.append(row)
+                        for study in all_studies:
+                            for t in study.trials:
+                                if t.state == optuna.trial.TrialState.COMPLETE:
+                                    row = {**t.params}
+                                    for k in ['IS_CAGR','IS_MDD','IS_Sharpe','OOS_CAGR','OOS_Score','CV_Score','WinRate','Stability']:
+                                        row[k] = t.user_attrs.get(k, 0)
+                                    row['Score'] = round(t.value, 2)
+                                    rows.append(row)
                         if rows:
                             st.session_state.optuna_results = pd.DataFrame(rows).sort_values('Score', ascending=False)
-                        status_box.success(f"✅ 최적화 완료! {len(rows)}개 유효 시도")
+                        status_box.success(f"✅ 완료! {len(rows)}개 유효 시도 (반복 {opt_repeat}회)")
 
                     # 결과 표시
                     if st.session_state.optuna_results is not None and not st.session_state.optuna_results.empty:
                         results_df = st.session_state.optuna_results
+
                         st.markdown("### 🏆 Optuna TOP 10")
-                        display_cols = ['CAGR', 'MDD', 'WinRate', 'Sharpe', 'Score',
-                                        'bt_cond', 'cl_cond', 'bt_buy', 'bt_prof', 'bt_time',
-                                        'md_buy', 'md_prof', 'md_time', 'cl_buy', 'cl_prof', 'cl_time']
+                        priority_cols = ['Score','IS_CAGR','IS_MDD','IS_Sharpe','OOS_CAGR','OOS_Score','CV_Score','Stability','WinRate',
+                                         'bt_cond','cl_cond','bt_buy','bt_prof','bt_time','md_buy','md_prof','md_time','cl_buy','cl_prof','cl_time']
                         if 'panic_buy' in results_df.columns:
-                            display_cols += ['panic_buy', 'panic_prof', 'panic_time',
-                                             'bear_buy', 'bear_prof', 'bear_time',
-                                             'panic_disp_th', 'bear_disp_th']
-                        avail_cols = [c for c in display_cols if c in results_df.columns]
+                            priority_cols += ['panic_buy','panic_prof','panic_time','bear_buy','bear_prof','bear_time']
+                        avail_cols = [c for c in priority_cols if c in results_df.columns]
                         st.dataframe(results_df[avail_cols].head(10), use_container_width=True)
 
                         best_row = results_df.iloc[0]
                         with st.container(border=True):
-                            m1, m2, m3, m4, m5 = st.columns(5)
+                            m1, m2, m3, m4, m5, m6 = st.columns(6)
                             m1.metric("🏅 Score", f"{best_row['Score']:.2f}")
-                            m2.metric("CAGR", f"{best_row['CAGR']:.2f}%")
-                            m3.metric("MDD", f"{best_row['MDD']:.2f}%")
-                            m4.metric("승률", f"{best_row['WinRate']}%")
-                            m5.metric("Sharpe", f"{best_row['Sharpe']:.2f}")
+                            m2.metric("IS CAGR", f"{best_row['IS_CAGR']:.1f}%")
+                            m3.metric("IS MDD", f"{best_row['IS_MDD']:.1f}%")
+                            m4.metric("OOS CAGR", f"{best_row.get('OOS_CAGR',0):.1f}%")
+                            m5.metric("안정성", f"{best_row.get('Stability',0):.2f}")
+                            m6.metric("Sharpe", f"{best_row.get('IS_Sharpe',0):.2f}")
+
+                        # 상위10 평균 ± std
+                        top10_opt = results_df.head(10)
+                        num_c = [c for c in top10_opt.select_dtypes(include=[np.number]).columns if c not in ['Score','IS_CAGR','IS_MDD','IS_Sharpe','OOS_CAGR','OOS_Score','CV_Score','Stability','WinRate']]
+                        if num_c:
+                            st.markdown("#### 📊 상위10 파라미터 통계")
+                            pstats = pd.DataFrame({'Mean': top10_opt[num_c].mean().round(3), 'Std': top10_opt[num_c].std().round(3)})
+                            pstats['CV%'] = (pstats['Std'] / pstats['Mean'].abs().replace(0, 1) * 100).round(1)
+                            st.dataframe(pstats, use_container_width=True)
+                            low_cv = (pstats['CV%'] < 30).sum()
+                            st.caption(f"✅ CV% < 30인 파라미터: {low_cv}/{len(num_c)} (높을수록 안정적)")
 
                         # 파라미터 중요도
                         if st.session_state.optuna_study:
                             try:
                                 importance = optuna.importance.get_param_importances(st.session_state.optuna_study)
                                 if importance:
-                                    imp_df = pd.DataFrame({'파라미터': list(importance.keys()), '중요도': list(importance.values())})
-                                    imp_df = imp_df.sort_values('중요도', ascending=True)
-                                    st.markdown("### 📊 파라미터 중요도")
+                                    imp_df = pd.DataFrame({'파라미터': list(importance.keys()), '중요도': list(importance.values())}).sort_values('중요도', ascending=True)
+                                    st.markdown("### 📊 파라미터 중요도 (fANOVA)")
                                     fig2, ax2 = plt.subplots(figsize=(8, max(4, len(imp_df)*0.35)))
                                     ax2.barh(imp_df['파라미터'], imp_df['중요도'], color='#4ECDC4')
                                     ax2.set_xlabel('Importance')
-                                    ax2.set_title('Parameter Importance (fANOVA)')
                                     plt.tight_layout()
                                     st.pyplot(fig2, use_container_width=True)
-                            except:
-                                pass
+                            except: pass
 
-                        # 산점도
-                        st.markdown("### 🎯 CAGR vs MDD 분포")
+                        # IS vs OOS 산점도
+                        st.markdown("### 🎯 IS vs OOS 분포")
                         fig3, ax3 = plt.subplots(figsize=(8, 5))
-                        sc3 = ax3.scatter(results_df['MDD'], results_df['CAGR'], c=results_df['Score'], cmap='viridis', alpha=0.6)
+                        sc3 = ax3.scatter(results_df['IS_MDD'], results_df['IS_CAGR'], c=results_df['Score'], cmap='viridis', alpha=0.5, label='IS')
+                        if 'OOS_CAGR' in results_df.columns and results_df['OOS_CAGR'].abs().sum() > 0:
+                            ax3.scatter(results_df.get('IS_MDD', results_df['IS_MDD']), results_df['OOS_CAGR'], marker='x', c='red', alpha=0.3, s=20, label='OOS')
+                        ax3.scatter([best_row['IS_MDD']], [best_row['IS_CAGR']], c='gold', s=200, marker='*', zorder=5, label='Best')
                         ax3.set_xlabel('MDD (%)'); ax3.set_ylabel('CAGR (%)')
-                        ax3.set_title('Optuna: Risk vs Return')
+                        ax3.set_title('Optuna: IS vs OOS Risk-Return'); ax3.legend()
                         plt.colorbar(sc3, label='Score')
-                        # 최적점 표시
-                        ax3.scatter([best_row['MDD']], [best_row['CAGR']], c='red', s=200, marker='*', zorder=5, label='Best')
-                        ax3.legend()
                         st.pyplot(fig3, use_container_width=True)
+
 
 else:
     st.markdown("")
