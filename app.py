@@ -1888,9 +1888,9 @@ if sheet_url:
                         best_row = results_df.iloc[0]
                         with st.container(border=True):
                             m1, m2, m3, m4, m5, m6 = st.columns(6)
-                            m1.metric("🏅 Score", f"{best_row['Score']:.2f}")
-                            m2.metric("IS CAGR", f"{best_row['IS_CAGR']:.1f}%")
-                            m3.metric("IS MDD", f"{best_row['IS_MDD']:.1f}%")
+                            m1.metric("🏅 Score", f"{best_row.get('Score',0):.2f}")
+                            m2.metric("IS CAGR", f"{best_row.get('IS_CAGR', best_row.get('CAGR',0)):.1f}%")
+                            m3.metric("IS MDD", f"{best_row.get('IS_MDD', best_row.get('MDD',0)):.1f}%")
                             m4.metric("OOS CAGR", f"{best_row.get('OOS_CAGR',0):.1f}%")
                             m5.metric("안정성", f"{best_row.get('Stability',0):.2f}")
                             m6.metric("Sharpe", f"{best_row.get('IS_Sharpe',0):.2f}")
