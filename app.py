@@ -1922,15 +1922,18 @@ if sheet_url:
 
                         # IS vs OOS 산점도
                         st.markdown("### 🎯 IS vs OOS 분포")
-                        fig3, ax3 = plt.subplots(figsize=(8, 5))
-                        sc3 = ax3.scatter(results_df['IS_MDD'], results_df['IS_CAGR'], c=results_df['Score'], cmap='viridis', alpha=0.5, label='IS')
-                        if 'OOS_CAGR' in results_df.columns and results_df['OOS_CAGR'].abs().sum() > 0:
-                            ax3.scatter(results_df.get('IS_MDD', results_df['IS_MDD']), results_df['OOS_CAGR'], marker='x', c='red', alpha=0.3, s=20, label='OOS')
-                        ax3.scatter([best_row['IS_MDD']], [best_row['IS_CAGR']], c='gold', s=200, marker='*', zorder=5, label='Best')
-                        ax3.set_xlabel('MDD (%)'); ax3.set_ylabel('CAGR (%)')
-                        ax3.set_title('Optuna: IS vs OOS Risk-Return'); ax3.legend()
-                        plt.colorbar(sc3, label='Score')
-                        st.pyplot(fig3, use_container_width=True)
+                        _mdd_col = 'IS_MDD' if 'IS_MDD' in results_df.columns else 'MDD'
+                        _cagr_col = 'IS_CAGR' if 'IS_CAGR' in results_df.columns else 'CAGR'
+                        if _mdd_col in results_df.columns and _cagr_col in results_df.columns:
+                            fig3, ax3 = plt.subplots(figsize=(8, 5))
+                            sc3 = ax3.scatter(results_df[_mdd_col], results_df[_cagr_col], c=results_df['Score'], cmap='viridis', alpha=0.5, label='IS')
+                            if 'OOS_CAGR' in results_df.columns and results_df['OOS_CAGR'].abs().sum() > 0:
+                                ax3.scatter(results_df[_mdd_col], results_df['OOS_CAGR'], marker='x', c='red', alpha=0.3, s=20, label='OOS')
+                            ax3.scatter([best_row.get(_mdd_col, 0)], [best_row.get(_cagr_col, 0)], c='gold', s=200, marker='*', zorder=5, label='Best')
+                            ax3.set_xlabel('MDD (%)'); ax3.set_ylabel('CAGR (%)')
+                            ax3.set_title('Optuna: IS vs OOS Risk-Return'); ax3.legend()
+                            plt.colorbar(sc3, label='Score')
+                            st.pyplot(fig3, use_container_width=True)
 
 
 else:
