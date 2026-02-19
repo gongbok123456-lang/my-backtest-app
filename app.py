@@ -1747,7 +1747,11 @@ if sheet_url:
 
                             trial_counter['n'] += 1
                             bar.progress(min(trial_counter['n'] / opt_trials, 1.0))
-                            status_box.caption(f"⏳ {trial_counter['n']}/{opt_trials} 완료 — 현재 최고 Score: {trial.study.best_value:.2f}" if trial.study.best_trial else f"⏳ {trial_counter['n']}/{opt_trials}")
+                            try:
+                                best_v = trial.study.best_value
+                                status_box.caption(f"⏳ {trial_counter['n']}/{opt_trials} 완료 — 현재 최고 Score: {best_v:.2f}")
+                            except ValueError:
+                                status_box.caption(f"⏳ {trial_counter['n']}/{opt_trials} 완료")
 
                             if opt_objective.startswith("CAGR −"):
                                 return cagr - 3 * abs(mdd)
