@@ -499,6 +499,286 @@ def suggest_params_from_prediction(prediction, base_params):
     }
 
 
+# --- [적응형 백테스트 엔진] ---
+def backtest_engine_adaptive(df, params, adjust_interval=5, pattern_window=20, pattern_horizon=10, pattern_top_k=5):
+    """
+    적응형 백테스트 엔진.
+    매 adjust_interval일마다 과거 패턴을 분석하고 파라미터를 동적으로 조정하면서 백테스트를 실행.
+    look-ahead bias 방지: 패턴 분석 시 해당 날짜 이전 데이터만 사용.
+    """
+    df_full = df.copy()
+    df_full['QQQ'] = pd.to_numeric(df_full['QQQ'], errors='coerce')
+    ma_win = int(params['ma_window'])
+
+    # 지표 계산 (기존 backtest_engine_web과 동일)
+    df_full['MA_Daily'] = df_full['QQQ'].rolling(window=ma_win, min_periods=1).mean()
+    df_full['Log_Start_Price'] = df_full['QQQ'].shift(ma_win - 1)
+    delta = df_full['SOXL'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    df_full['RSI'] = 100 - (100 / (1 + rs))
+    df_full['Low_10'] = df_full['SOXL'].rolling(window=10).min()
+    df_full['RSI_Low_10'] = df_full['RSI'].rolling(window=10).min()
+    df_full['Bullish_Div'] = (df_full['SOXL'] == df_full['Low_10']) & (df_full['RSI'] > df_full['RSI'].shift(1)) & (df_full['RSI'] < 45)
+    df_full['BB_MA20'] = df_full['SOXL'].rolling(window=20).mean()
+    df_full['BB_STD20'] = df_full['SOXL'].rolling(window=20).std()
+    df_full['BB_Upper'] = df_full['BB_MA20'] + (2 * df_full['BB_STD20'])
+
+    weekly_resampled = df_full[['QQQ', 'MA_Daily', 'Log_Start_Price']].resample('W-FRI').last()
+    weekly_resampled.columns = ['QQQ_Fri', 'MA_Fri', 'Start_Price_Fri']
+    weekly_resampled['Disp_Fri'] = weekly_resampled['QQQ_Fri'] / weekly_resampled['MA_Fri']
+    daily_expanded = weekly_resampled.resample('D').ffill()
+    daily_shifted = daily_expanded.shift(1)
+    df_mapped = daily_shifted.reindex(df_full.index)
+    df_full['Basis_Disp'] = df_mapped['Disp_Fri'].fillna(1.0)
+    df_full['Prev_Close'] = df_full['SOXL'].shift(1)
+
+    start_dt = pd.to_datetime(params['start_date'])
+    end_dt = pd.to_datetime(params['end_date'])
+    df_full = df_full.sort_index()
+
+    # 전체 데이터에서 시작일 이전까지의 인덱스 위치 (패턴 분석용)
+    df_trade = df_full[(df_full.index >= start_dt) & (df_full.index <= end_dt + pd.Timedelta(days=1))].copy()
+    df_trade = df_trade.dropna(subset=['SOXL'])
+    if len(df_trade) == 0:
+        return None
+
+    dates = df_trade.index
+
+    # 현재 활성 파라미터 (처음에는 고정 파라미터에서 시작)
+    active_params = params.copy()
+    strategy = {
+        'Bottom':  {'cond': params['bt_cond'], 'buy': params['bt_buy'], 'prof': params['bt_prof'], 'time': params['bt_time']},
+        'Ceiling': {'cond': params['cl_cond'], 'buy': params['cl_buy'], 'prof': params['cl_prof'], 'time': params['cl_time']},
+        'Middle':  {'cond': 999,           'buy': params['md_buy'], 'prof': params['md_prof'], 'time': params['md_time']}
+    }
+
+    cash = params['initial_balance']
+    seed_equity = cash
+    holdings = []
+    trade_log = []; daily_log = []; daily_equity = []; daily_dates = []
+    trade_count = 0; win_count = 0
+    MAX_SLOTS = 10; SEC_FEE = 0.0000278
+    param_change_log = []  # 파라미터 변경 이력
+    days_since_adjust = adjust_interval  # 첫 날에 분석 실행
+    min_history = pattern_window * 3  # 패턴 분석을 위한 최소 과거 데이터
+
+    for i in range(len(df_trade)):
+        row = df_trade.iloc[i]
+        today_close = row['SOXL']
+        if pd.isna(today_close) or today_close <= 0:
+            continue
+        if params.get('force_round', True):
+            today_close = round(today_close, 2)
+
+        # === 주기적 패턴 분석 & 파라미터 조정 ===
+        days_since_adjust += 1
+        if days_since_adjust >= adjust_interval:
+            # 해당 날짜 이전까지의 데이터만 사용 (look-ahead bias 방지)
+            current_date = dates[i]
+            df_past = df_full[df_full.index <= current_date].copy()
+
+            if len(df_past) >= min_history:
+                prediction = find_similar_patterns(
+                    df_past, window_size=pattern_window,
+                    forecast_horizon=pattern_horizon, top_k=pattern_top_k
+                )
+                if prediction is not None:
+                    suggestion = suggest_params_from_prediction(prediction, params)
+                    sp = suggestion['suggested_params']
+
+                    # 전략 파라미터 갱신
+                    strategy['Bottom'] = {
+                        'cond': active_params['bt_cond'],
+                        'buy': sp['bt_buy'], 'prof': sp['bt_prof'], 'time': sp['bt_time']
+                    }
+                    strategy['Middle'] = {
+                        'cond': 999,
+                        'buy': sp['md_buy'], 'prof': sp['md_prof'], 'time': sp['md_time']
+                    }
+                    strategy['Ceiling'] = {
+                        'cond': active_params['cl_cond'],
+                        'buy': sp.get('cl_buy', active_params['cl_buy']),
+                        'prof': sp.get('cl_prof', active_params['cl_prof']),
+                        'time': sp.get('cl_time', active_params['cl_time'])
+                    }
+                    active_params.update(sp)
+
+                    param_change_log.append({
+                        'Date': current_date,
+                        'Direction': suggestion['summary']['direction'],
+                        'Avg_Return': suggestion['summary']['avg_return'],
+                        'Bullish%': suggestion['summary']['bullish_pct'],
+                        'B_Buy': round(sp['bt_buy'], 1),
+                        'B_Prof': round(sp['bt_prof'] * 100, 2),
+                        'B_Time': sp['bt_time'],
+                        'M_Buy': round(sp['md_buy'], 1),
+                        'M_Prof': round(sp['md_prof'] * 100, 2),
+                        'M_Time': sp['md_time'],
+                    })
+            days_since_adjust = 0
+
+        # === 매매 로직 (기존 backtest_engine_web과 동일) ===
+        start_cash = cash
+        strat_type = params.get('strategy_type', 'MA 이격도')
+        current_disp = row['Basis_Disp'] if not pd.isna(row['Basis_Disp']) else 1.0
+        current_rsi = row['RSI'] if not pd.isna(row['RSI']) else 50.0
+        is_div = row['Bullish_Div']
+
+        if strat_type == 'RSI':
+            if current_rsi < active_params['bt_cond']:
+                phase = 'Bottom'
+            elif current_rsi > active_params['cl_cond']:
+                phase = 'Ceiling'
+            else:
+                phase = 'Middle'
+            disp_val = current_rsi
+        elif strat_type == 'RSI 다이버전스':
+            if is_div:
+                phase = 'Bottom'
+            elif current_rsi > active_params['cl_cond']:
+                phase = 'Ceiling'
+            else:
+                phase = 'Middle'
+            disp_val = current_rsi
+        else:
+            if current_disp < active_params['bt_cond']:
+                phase = 'Bottom'
+            elif current_disp > active_params['cl_cond']:
+                phase = 'Ceiling'
+            else:
+                phase = 'Middle'
+            disp_val = current_disp
+
+        conf = strategy[phase]
+        tiers_sold = set()
+        daily_net_profit_sum = 0
+
+        for stock in holdings[:]:
+            buy_p, days, qty, mode, tier, buy_dt, peak_price = stock
+            s_conf = strategy[mode]
+            days += 1
+            peak_price = max(peak_price, today_close)
+            stock[6] = peak_price
+            target_p = excel_round_up(buy_p * (1 + s_conf['prof']), 2)
+            is_sold = False; reason = ""
+            t_pct = active_params.get('trailing_pct', 0)
+            if t_pct > 0 and today_close < peak_price * (1 - t_pct):
+                is_sold = True; reason = f"TrailingStop({t_pct*100:.0f}%)"
+            elif days >= s_conf['time']:
+                is_sold = True; reason = f"TimeCut({days}d)"
+            elif today_close >= target_p:
+                if active_params.get('use_bb_walk', False) and today_close > row['BB_Upper']:
+                    is_sold = False
+                else:
+                    is_sold = True; reason = "Profit"
+
+            if is_sold:
+                holdings.remove(stock)
+                tiers_sold.add(tier)
+                sell_amt = today_close * qty
+                sec_fee_val = round(sell_amt * SEC_FEE, 2)
+                net_receive = sell_amt * (1 - active_params['fee_rate']) - sec_fee_val
+                buy_cost = (buy_p * qty) * (1 + active_params['fee_rate'])
+                real_profit = round(net_receive - buy_cost, 2)
+                daily_net_profit_sum += real_profit
+                cash += net_receive
+                trade_count += 1
+                if real_profit > 0:
+                    win_count += 1
+                trade_log.append({
+                    'Date': dates[i], 'Type': 'Sell', 'Tier': tier, 'Phase': mode,
+                    'Ref_Date': '-', 'Disp': disp_val, 'Price': today_close, 'Qty': qty,
+                    'Profit': real_profit, 'Reason': reason
+                })
+            else:
+                stock[1] = days
+
+        prev_c = row['Prev_Close'] if not pd.isna(row['Prev_Close']) else today_close
+        if pd.isna(prev_c):
+            prev_c = today_close
+        target_p = excel_round_down(prev_c * (1 + conf['buy'] / 100), 2)
+
+        if today_close <= target_p and len(holdings) < MAX_SLOTS:
+            curr_tiers = {h[4] for h in holdings}
+            unavail = curr_tiers.union(tiers_sold)
+            new_tier = 1
+            while new_tier in unavail:
+                new_tier += 1
+            if new_tier <= MAX_SLOTS:
+                weight_pct = 10.0
+                if 'tier_weights' in active_params:
+                    try:
+                        weight_pct = active_params['tier_weights'].loc[f'Tier {new_tier}', phase]
+                    except:
+                        weight_pct = 10.0
+                target_seed = seed_equity * (weight_pct / 100.0)
+                bet = min(target_seed, start_cash)
+                bet_net_fee = bet / (1 + active_params['fee_rate'])
+                if bet >= 10:
+                    final_qty = 0
+                    if new_tier == MAX_SLOTS:
+                        final_qty = int(bet_net_fee / target_p)
+                    else:
+                        final_qty = calculate_loc_quantity(
+                            bet_net_fee, target_p, today_close,
+                            -1 * (active_params['loc_range'] / 100.0),
+                            int(active_params['add_order_cnt'])
+                        )
+                    max_buyable = int(start_cash / (today_close * (1 + active_params['fee_rate'])))
+                    real_qty = min(final_qty, max_buyable)
+                    if real_qty > 0:
+                        buy_amt = today_close * real_qty * (1 + active_params['fee_rate'])
+                        cash -= buy_amt
+                        holdings.append([today_close, 0, real_qty, phase, new_tier, dates[i], today_close])
+                        trade_log.append({
+                            'Date': dates[i], 'Type': 'Buy', 'Tier': new_tier, 'Phase': phase,
+                            'Ref_Date': '-', 'Disp': disp_val, 'Price': today_close, 'Qty': real_qty,
+                            'Seed(1회)': round(seed_equity, 0), 'Invest': round(buy_amt, 0),
+                            'Profit': 0, 'Reason': 'Adaptive'
+                        })
+
+        if daily_net_profit_sum != 0:
+            rate = active_params['profit_rate'] if daily_net_profit_sum > 0 else active_params['loss_rate']
+            seed_equity += daily_net_profit_sum * rate
+
+        current_eq = cash + sum([h[2] * today_close for h in holdings])
+        daily_equity.append(current_eq); daily_dates.append(dates[i])
+        daily_log.append({
+            'Date': dates[i], 'Equity': round(current_eq, 2),
+            'Cash': round(cash, 2), 'SeedEquity': round(seed_equity, 2),
+            'Holdings': len(holdings)
+        })
+
+    if not daily_equity:
+        return None
+    final_equity = daily_equity[-1]
+    total_ret_pct = (final_equity / params['initial_balance'] - 1) * 100
+    days_total = (dates[-1] - dates[0]).days
+    cagr = ((final_equity / params['initial_balance']) ** (365 / days_total) - 1) * 100 if days_total > 0 else 0
+    eq_series = pd.Series(daily_equity, index=daily_dates)
+    peak = eq_series.cummax()
+    mdd = ((eq_series / peak - 1) * 100).min()
+    win_rate = (win_count / trade_count * 100) if trade_count > 0 else 0
+
+    try:
+        yearly_ret = eq_series.resample('YE').last().pct_change() * 100
+        yearly_ret.iloc[0] = (eq_series.resample('YE').last().iloc[0] / params['initial_balance'] - 1) * 100
+    except:
+        yearly_ret = eq_series.resample('Y').last().pct_change() * 100
+        yearly_ret.iloc[0] = (eq_series.resample('Y').last().iloc[0] / params['initial_balance'] - 1) * 100
+
+    return {
+        'CAGR': round(cagr, 2), 'MDD': round(mdd, 2), 'Final': int(final_equity),
+        'Return': round(total_ret_pct, 2), 'WinRate': round(win_rate, 2), 'Trades': trade_count,
+        'Series': eq_series, 'Yearly': yearly_ret, 'Params': params,
+        'TradeLog': pd.DataFrame(trade_log), 'DailyLog': pd.DataFrame(daily_log),
+        'CurrentHoldings': holdings, 'LastData': df_trade.iloc[-1],
+        'ParamChangeLog': pd.DataFrame(param_change_log),  # 적응형 전용
+    }
+
+
 # --- [백테스트 엔진] ---
 def backtest_engine_web(df, params):
     df = df.copy()
@@ -1751,6 +2031,111 @@ if sheet_url:
                             st.session_state['pattern_suggested_params'] = sugg_p
                             st.success("✅ 파라미터가 저장되었습니다! 백테스트 연구소에서 '실험 조건'을 수동으로 조정하거나, 아래 값을 참고하세요.")
                             st.json({k: v for k, v in sugg_p.items() if k in [ck[0] for ck in compare_keys]})
+
+            # --- [⚔️ 적응형 vs 고정 백테스트 비교] ---
+            st.markdown("---")
+            st.subheader("⚔️ 적응형 vs 고정 파라미터 백테스트 비교")
+            st.caption("고정된 파라미터를 사용하는 기존 백테스트와, 과거 패턴을 분석하여 파라미터를 동적으로 조정하는 적응형 백테스트를 비교합니다.")
+
+            c_adp_in, c_adp_out = st.columns([1, 2])
+
+            with c_adp_in:
+                with st.form("adaptive_form"):
+                    adp_interval = st.number_input("🔄 조정 주기 (거래일)", 3, 20, 5, step=1, help="몇 거래일마다 패턴 분석 후 파라미터를 재조정할지")
+                    adp_window = st.number_input("📏 패턴 윈도우 (일)", 10, 60, 20, step=5, help="패턴 비교에 사용할 윈도우 크기")
+                    adp_horizon = st.number_input("🔭 예측 기간 (일)", 5, 30, 10, step=5, help="유사 패턴 이후 예측할 기간")
+                    adp_top_k = st.number_input("🏆 Top-K", 3, 10, 5, step=1, help="비교할 유사 패턴 수")
+                    adp_base = st.radio("🎯 기준 파라미터", ["🛡️ 안정형", "🔥 공격형"], horizontal=True, key="adp_base_radio")
+                    adp_run = st.form_submit_button("⚔️ 비교 백테스트 실행", type="primary", use_container_width=True)
+
+            with c_adp_out:
+                if adp_run:
+                    base_p = params_s.copy() if "안정" in adp_base else params_a.copy()
+
+                    with st.spinner("⏳ 고정 파라미터 백테스트 실행 중..."):
+                        res_fixed = backtest_engine_web(df, base_p)
+
+                    with st.spinner("🔄 적응형 백테스트 실행 중 (패턴 분석 포함)..."):
+                        res_adaptive = backtest_engine_adaptive(
+                            df, base_p,
+                            adjust_interval=adp_interval,
+                            pattern_window=adp_window,
+                            pattern_horizon=adp_horizon,
+                            pattern_top_k=adp_top_k
+                        )
+
+                    if not res_fixed or not res_adaptive:
+                        st.error("❌ 백테스트 실행 실패. 데이터를 확인해주세요.")
+                    else:
+                        # === 1. 핵심 메트릭 비교 ===
+                        st.markdown("#### 📊 핵심 메트릭 비교")
+                        with st.container(border=True):
+                            mc1, mc2 = st.columns(2)
+                            with mc1:
+                                st.markdown("**📌 고정 파라미터**")
+                                f1, f2, f3, f4, f5 = st.columns(5)
+                                f1.metric("최종 자산", f"${res_fixed['Final']:,}")
+                                f2.metric("CAGR", f"{res_fixed['CAGR']}%")
+                                f3.metric("MDD", f"{res_fixed['MDD']}%")
+                                f4.metric("승률", f"{res_fixed['WinRate']}%")
+                                f5.metric("거래수", f"{res_fixed['Trades']}")
+                            with mc2:
+                                st.markdown("**🔄 적응형 (패턴 기반)**")
+                                a1, a2, a3, a4, a5 = st.columns(5)
+                                a1.metric("최종 자산", f"${res_adaptive['Final']:,}",
+                                          delta=f"{res_adaptive['Final'] - res_fixed['Final']:+,}")
+                                a2.metric("CAGR", f"{res_adaptive['CAGR']}%",
+                                          delta=f"{res_adaptive['CAGR'] - res_fixed['CAGR']:+.2f}%p")
+                                a3.metric("MDD", f"{res_adaptive['MDD']}%",
+                                          delta=f"{res_adaptive['MDD'] - res_fixed['MDD']:+.2f}%p",
+                                          delta_color="inverse")
+                                a4.metric("승률", f"{res_adaptive['WinRate']}%",
+                                          delta=f"{res_adaptive['WinRate'] - res_fixed['WinRate']:+.2f}%p")
+                                a5.metric("거래수", f"{res_adaptive['Trades']}",
+                                          delta=f"{res_adaptive['Trades'] - res_fixed['Trades']:+d}")
+
+                        # === 2. 자산 추이 오버레이 차트 ===
+                        st.markdown("#### 📈 자산 추이 비교")
+                        fig_cmp, ax_cmp = plt.subplots(figsize=(14, 5))
+                        ax_cmp.plot(res_fixed['Series'].index, res_fixed['Series'].values,
+                                    color='#888888', linewidth=1.5, label=f"고정 (${res_fixed['Final']:,})", alpha=0.8)
+                        ax_cmp.plot(res_adaptive['Series'].index, res_adaptive['Series'].values,
+                                    color='#4ECDC4', linewidth=2, label=f"적응형 (${res_adaptive['Final']:,})")
+
+                        # 파라미터 변경 시점 표시
+                        if not res_adaptive['ParamChangeLog'].empty:
+                            change_dates = res_adaptive['ParamChangeLog']['Date']
+                            for cd in change_dates:
+                                ax_cmp.axvline(x=cd, color='#FFD700', alpha=0.15, linewidth=0.5)
+
+                        ax_cmp.set_title('고정 vs 적응형 자산 추이', fontweight='bold')
+                        ax_cmp.set_ylabel('자산 ($)')
+                        ax_cmp.legend(loc='upper left', fontsize=9)
+                        ax_cmp.grid(True, alpha=0.3)
+                        plt.tight_layout()
+                        st.pyplot(fig_cmp, use_container_width=True)
+                        st.caption("🟡 노란색 세로선: 패턴 분석으로 파라미터가 변경된 시점")
+
+                        # === 3. 연도별 수익률 비교 ===
+                        st.markdown("#### 📅 연도별 수익률 비교")
+                        yearly_comp = pd.DataFrame({
+                            '고정 (%)': res_fixed['Yearly'].round(2),
+                            '적응형 (%)': res_adaptive['Yearly'].round(2),
+                        })
+                        yearly_comp['차이 (%p)'] = (yearly_comp['적응형 (%)'] - yearly_comp['고정 (%)']).round(2)
+                        yearly_comp.index = yearly_comp.index.strftime('%Y')
+                        st.dataframe(yearly_comp, use_container_width=True)
+
+                        # === 4. 파라미터 변경 이력 ===
+                        if not res_adaptive['ParamChangeLog'].empty:
+                            st.markdown("#### 📝 파라미터 변경 이력")
+                            pcl = res_adaptive['ParamChangeLog'].copy()
+                            pcl['Date'] = pcl['Date'].dt.strftime('%Y-%m-%d')
+                            st.dataframe(pcl, hide_index=True, use_container_width=True, height=300)
+                            st.caption(f"총 {len(pcl)}회 파라미터 조정 | "
+                                         f"강세: {(pcl['Direction']=='강세').sum()}회 | "
+                                         f"약세: {(pcl['Direction']=='약세').sum()}회 | "
+                                         f"중립: {(pcl['Direction']=='중립').sum()}회")
 
         # === 공통 헬퍼: 점수 계산 ===
         def _calc_score(res):
