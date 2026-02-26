@@ -2069,30 +2069,36 @@ if sheet_url:
                     else:
                         # === 1. 핵심 메트릭 비교 ===
                         st.markdown("#### 📊 핵심 메트릭 비교")
-                        with st.container(border=True):
-                            mc1, mc2 = st.columns(2)
-                            with mc1:
-                                st.markdown("**📌 고정 파라미터**")
-                                f1, f2, f3, f4, f5 = st.columns(5)
-                                f1.metric("최종 자산", f"${res_fixed['Final']:,}")
-                                f2.metric("CAGR", f"{res_fixed['CAGR']}%")
-                                f3.metric("MDD", f"{res_fixed['MDD']}%")
-                                f4.metric("승률", f"{res_fixed['WinRate']}%")
-                                f5.metric("거래수", f"{res_fixed['Trades']}")
-                            with mc2:
-                                st.markdown("**🔄 적응형 (패턴 기반)**")
-                                a1, a2, a3, a4, a5 = st.columns(5)
-                                a1.metric("최종 자산", f"${res_adaptive['Final']:,}",
-                                          delta=f"{res_adaptive['Final'] - res_fixed['Final']:+,}")
-                                a2.metric("CAGR", f"{res_adaptive['CAGR']}%",
-                                          delta=f"{res_adaptive['CAGR'] - res_fixed['CAGR']:+.2f}%p")
-                                a3.metric("MDD", f"{res_adaptive['MDD']}%",
-                                          delta=f"{res_adaptive['MDD'] - res_fixed['MDD']:+.2f}%p",
-                                          delta_color="inverse")
-                                a4.metric("승률", f"{res_adaptive['WinRate']}%",
-                                          delta=f"{res_adaptive['WinRate'] - res_fixed['WinRate']:+.2f}%p")
-                                a5.metric("거래수", f"{res_adaptive['Trades']}",
-                                          delta=f"{res_adaptive['Trades'] - res_fixed['Trades']:+d}")
+
+                        # 비교 테이블로 표시 (공간 부족 방지)
+                        cmp_table = pd.DataFrame({
+                            '지표': ['최종 자산', 'CAGR', 'MDD', '수익률', '승률', '거래수'],
+                            '📌 고정': [
+                                f"${res_fixed['Final']:,}",
+                                f"{res_fixed['CAGR']}%",
+                                f"{res_fixed['MDD']}%",
+                                f"{res_fixed['Return']}%",
+                                f"{res_fixed['WinRate']}%",
+                                f"{res_fixed['Trades']}"
+                            ],
+                            '🔄 적응형': [
+                                f"${res_adaptive['Final']:,}",
+                                f"{res_adaptive['CAGR']}%",
+                                f"{res_adaptive['MDD']}%",
+                                f"{res_adaptive['Return']}%",
+                                f"{res_adaptive['WinRate']}%",
+                                f"{res_adaptive['Trades']}"
+                            ],
+                            '차이': [
+                                f"{res_adaptive['Final'] - res_fixed['Final']:+,}",
+                                f"{res_adaptive['CAGR'] - res_fixed['CAGR']:+.2f}%p",
+                                f"{res_adaptive['MDD'] - res_fixed['MDD']:+.2f}%p",
+                                f"{res_adaptive['Return'] - res_fixed['Return']:+.2f}%p",
+                                f"{res_adaptive['WinRate'] - res_fixed['WinRate']:+.2f}%p",
+                                f"{res_adaptive['Trades'] - res_fixed['Trades']:+d}"
+                            ],
+                        })
+                        st.dataframe(cmp_table, hide_index=True, use_container_width=True)
 
                         # === 2. 자산 추이 오버레이 차트 ===
                         st.markdown("#### 📈 자산 추이 비교")
