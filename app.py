@@ -341,6 +341,164 @@ def calculate_loc_quantity(seed_amount, order_price, close_price, buy_range, max
         if implied_price >= close_price and implied_price >= bot_price: final_qty += step_qty
     return final_qty
 
+# --- [유사 차트 패턴 탐색 엔진] ---
+def find_similar_patterns(df, window_size=20, forecast_horizon=10, top_k=5, ticker='SOXL'):
+    """
+    현재 차트 패턴(최근 window_size일)과 유사한 과거 패턴을 찾고,
+    유사 패턴 이후 forecast_horizon일의 수익률을 추출한다.
+    """
+    prices = df[ticker].dropna().values
+    if len(prices) < window_size + forecast_horizon + 10:
+        return None
+
+    # 현재 패턴 (마지막 window_size일)
+    current_raw = prices[-window_size:]
+    c_min, c_max = current_raw.min(), current_raw.max()
+    if c_max == c_min:
+        return None
+    current_norm = (current_raw - c_min) / (c_max - c_min)
+
+    # 과거 모든 윈도우와 비교 (현재 패턴과 겹치지 않도록 제외)
+    search_end = len(prices) - window_size - 1  # 현재 패턴 직전까지
+    candidates = []
+
+    for start_idx in range(0, search_end - window_size - forecast_horizon + 1):
+        end_idx = start_idx + window_size
+        past_raw = prices[start_idx:end_idx]
+        p_min, p_max = past_raw.min(), past_raw.max()
+        if p_max == p_min:
+            continue
+        past_norm = (past_raw - p_min) / (p_max - p_min)
+
+        # 피어슨 상관계수 계산
+        corr = np.corrcoef(current_norm, past_norm)[0, 1]
+        if np.isnan(corr):
+            continue
+
+        # 후속 흐름 추출
+        forecast_end = min(end_idx + forecast_horizon, len(prices))
+        if forecast_end <= end_idx:
+            continue
+        forecast_prices = prices[end_idx:forecast_end]
+        base_price = prices[end_idx - 1]
+        forecast_returns = (forecast_prices / base_price - 1) * 100
+
+        candidates.append({
+            'start_idx': start_idx,
+            'end_idx': end_idx,
+            'similarity': corr,
+            'pattern_norm': past_norm,
+            'pattern_raw': past_raw,
+            'forecast_returns': forecast_returns,
+            'forecast_prices': forecast_prices,
+            'base_price': base_price,
+        })
+
+    if not candidates:
+        return None
+
+    # 유사도 순 내림차순 정렬
+    candidates.sort(key=lambda x: x['similarity'], reverse=True)
+
+    # Top-K 선정 (겹침 방지: 이미 선택된 패턴과 window_size/2 이상 겹치면 제외)
+    selected = []
+    min_gap = window_size // 2
+    for c in candidates:
+        overlapping = False
+        for s in selected:
+            if abs(c['start_idx'] - s['start_idx']) < min_gap:
+                overlapping = True
+                break
+        if not overlapping:
+            # 날짜 정보 추가
+            try:
+                c['start_date'] = df.index[c['start_idx']]
+                c['end_date'] = df.index[c['end_idx'] - 1]
+            except:
+                c['start_date'] = None
+                c['end_date'] = None
+            selected.append(c)
+        if len(selected) >= top_k:
+            break
+
+    if not selected:
+        return None
+
+    # 예측 통계 계산 (각 패턴의 마지막 수익률 기준)
+    final_returns = [m['forecast_returns'][-1] for m in selected if len(m['forecast_returns']) > 0]
+    avg_return = np.mean(final_returns) if final_returns else 0
+    std_return = np.std(final_returns) if len(final_returns) > 1 else 0
+    bullish_count = sum(1 for r in final_returns if r > 0)
+    bullish_ratio = bullish_count / len(final_returns) if final_returns else 0.5
+
+    return {
+        'current_pattern': current_norm,
+        'current_raw': current_raw,
+        'matches': selected,
+        'avg_forecast_return': round(avg_return, 2),
+        'forecast_std': round(std_return, 2),
+        'bullish_ratio': round(bullish_ratio, 2),
+        'window_size': window_size,
+        'forecast_horizon': forecast_horizon,
+    }
+
+
+def suggest_params_from_prediction(prediction, base_params):
+    """
+    패턴 예측 결과에 따라 투자 파라미터를 자동 조정하여 제안한다.
+    base_params: 현재 사이드바 설정 (params_s 또는 params_a)
+    """
+    avg_ret = prediction['avg_forecast_return']
+    std_ret = prediction['forecast_std']
+    bullish = prediction['bullish_ratio']
+
+    suggested = base_params.copy()
+    adjustments = []  # 변경 내역 기록
+
+    if avg_ret > 3:
+        # 강세 예측: 과감한 매수, 높은 익절 목표
+        suggested['bt_buy'] = round(base_params['bt_buy'] * 1.2, 1)
+        suggested['bt_prof'] = round(base_params['bt_prof'] * 1.5, 4)
+        suggested['bt_time'] = max(5, int(base_params['bt_time'] * 0.7))
+        suggested['md_prof'] = round(base_params['md_prof'] * 1.3, 4)
+        adjustments.append(("🟢 강세", f"평균 +{avg_ret:.1f}% 예측", "익절 목표↑, 존버일↓"))
+    elif avg_ret < -3:
+        # 약세 예측: 보수적 매수, 낮은 익절, 존버 시간 연장
+        suggested['bt_buy'] = round(base_params['bt_buy'] * 0.8, 1)
+        suggested['bt_prof'] = round(base_params['bt_prof'] * 0.7, 4)
+        suggested['bt_time'] = min(60, int(base_params['bt_time'] * 1.5))
+        suggested['md_buy'] = round(min(base_params['md_buy'], -1.0), 1)
+        suggested['md_prof'] = round(base_params['md_prof'] * 0.8, 4)
+        suggested['md_time'] = min(40, int(base_params['md_time'] * 1.3))
+        adjustments.append(("🔴 약세", f"평균 {avg_ret:.1f}% 예측", "매수점↓, 존버일↑"))
+    else:
+        adjustments.append(("⚪ 중립", f"평균 {avg_ret:+.1f}% 예측", "기존 유지"))
+
+    if std_ret > 5:
+        # 고변동성: 더 보수적으로
+        suggested['cl_buy'] = round(min(base_params['cl_buy'], -0.5), 1)
+        suggested['cl_prof'] = round(base_params['cl_prof'] * 0.8, 4)
+        suggested['cl_time'] = min(50, int(base_params['cl_time'] * 1.2))
+        adjustments.append(("🟡 고변동", f"표준편차 {std_ret:.1f}%", "천장 보수적 조정"))
+
+    if bullish < 0.3:
+        # 대다수 하락 예측
+        adjustments.append(("⚠️ 하락 우세", f"상승 확률 {bullish*100:.0f}%", "방어적 운영 권장"))
+    elif bullish > 0.7:
+        adjustments.append(("✅ 상승 우세", f"상승 확률 {bullish*100:.0f}%", "공격적 운영 가능"))
+
+    return {
+        'suggested_params': suggested,
+        'adjustments': adjustments,
+        'summary': {
+            'direction': '강세' if avg_ret > 3 else ('약세' if avg_ret < -3 else '중립'),
+            'avg_return': avg_ret,
+            'std': std_ret,
+            'bullish_pct': bullish * 100,
+        }
+    }
+
+
 # --- [백테스트 엔진] ---
 def backtest_engine_web(df, params):
     df = df.copy()
@@ -1453,6 +1611,146 @@ if sheet_url:
                                     ac1.metric("총거래수", adv['총거래수'])
                                     ac2.metric("평균수익", f"${adv['평균수익']:,.2f}")
                                     ac3.metric("거래빈도", f"{adv['거래빈도(일/건)']}일/건")
+
+            # --- [🔮 유사 패턴 예측 섹션] ---
+            st.markdown("---")
+            st.subheader("🔮 유사 차트 패턴 예측")
+            st.caption("현재 SOXL 차트 패턴과 유사한 과거 구간을 탐색하여, 이후 가격 흐름을 예측하고 파라미터 조정을 제안합니다.")
+
+            c_pat_in, c_pat_out = st.columns([1, 2])
+
+            with c_pat_in:
+                with st.form("pattern_form"):
+                    pat_window = st.number_input("📏 패턴 윈도우 (일)", 10, 60, 20, step=5, help="현재 차트에서 비교할 최근 N일의 구간 길이")
+                    pat_horizon = st.number_input("🔭 예측 기간 (일)", 5, 30, 10, step=5, help="유사 패턴 이후 몇 일의 흐름을 볼 것인지")
+                    pat_top_k = st.number_input("🏆 Top-K 패턴 수", 3, 10, 5, step=1, help="가장 유사한 상위 K개 패턴")
+                    pat_base = st.radio("🎯 파라미터 기준", ["🛡️ 안정형", "🔥 공격형"], horizontal=True)
+                    pat_run = st.form_submit_button("🔍 패턴 분석 실행", type="primary", use_container_width=True)
+
+            with c_pat_out:
+                if pat_run:
+                    with st.spinner("🔎 유사 패턴 탐색 중..."):
+                        prediction = find_similar_patterns(df, window_size=pat_window, forecast_horizon=pat_horizon, top_k=pat_top_k)
+
+                    if prediction is None:
+                        st.error("❌ 유사 패턴을 찾을 수 없습니다. 데이터가 충분하지 않거나 윈도우 크기를 줄여보세요.")
+                    else:
+                        # === 1. 예측 요약 메트릭 ===
+                        with st.container(border=True):
+                            pm1, pm2, pm3, pm4 = st.columns(4)
+                            avg_r = prediction['avg_forecast_return']
+                            direction_emoji = "📈" if avg_r > 0 else "📉"
+                            pm1.metric(f"{direction_emoji} 평균 예측 수익률", f"{avg_r:+.2f}%")
+                            pm2.metric("📊 예측 표준편차", f"{prediction['forecast_std']:.2f}%")
+                            pm3.metric("🎯 상승 확률", f"{prediction['bullish_ratio']*100:.0f}%")
+                            pm4.metric("🔍 유사도 (1위)", f"{prediction['matches'][0]['similarity']:.4f}")
+
+                        # === 2. 오버레이 차트 ===
+                        st.markdown("#### 📊 패턴 오버레이 차트")
+                        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5), gridspec_kw={'width_ratios': [1, 1]})
+
+                        # 좌: 정규화 패턴 비교
+                        days_pattern = np.arange(pat_window)
+                        ax1.plot(days_pattern, prediction['current_pattern'], color='#4ECDC4', linewidth=2.5, label='현재 패턴', zorder=5)
+                        for idx, m in enumerate(prediction['matches']):
+                            alpha = max(0.2, 0.8 * m['similarity'])
+                            ax1.plot(days_pattern, m['pattern_norm'], color='#888888', alpha=alpha, linewidth=1,
+                                     label=f"#{idx+1} ({m['similarity']:.3f})" if idx < 3 else None)
+                        ax1.set_title('정규화 패턴 비교', fontweight='bold')
+                        ax1.set_xlabel('일 수')
+                        ax1.set_ylabel('정규화 가격 (0~1)')
+                        ax1.legend(fontsize=7, loc='best')
+                        ax1.grid(True, alpha=0.3)
+
+                        # 우: 예측 수익률 경로
+                        max_horizon = pat_horizon
+                        for idx, m in enumerate(prediction['matches']):
+                            fr = m['forecast_returns']
+                            days_fc = np.arange(1, len(fr) + 1)
+                            alpha = max(0.25, 0.8 * m['similarity'])
+                            color = '#4ECDC4' if fr[-1] > 0 else '#FF6B6B'
+                            ax2.plot(days_fc, fr, color=color, alpha=alpha, linewidth=1.2,
+                                     label=f"#{idx+1}: {fr[-1]:+.1f}%" if idx < 5 else None)
+
+                        # 평균 + 표준편차 음영
+                        all_returns = np.array([m['forecast_returns'] for m in prediction['matches'] if len(m['forecast_returns']) == max_horizon])
+                        if len(all_returns) > 1:
+                            mean_r = all_returns.mean(axis=0)
+                            std_r = all_returns.std(axis=0)
+                            days_fc = np.arange(1, max_horizon + 1)
+                            ax2.plot(days_fc, mean_r, color='#FFD700', linewidth=2.5, label=f'평균: {mean_r[-1]:+.1f}%', zorder=5)
+                            ax2.fill_between(days_fc, mean_r - std_r, mean_r + std_r, color='#FFD700', alpha=0.15, label='±1σ')
+
+                        ax2.axhline(y=0, color='white', linestyle='--', alpha=0.5)
+                        ax2.set_title('예측 수익률 경로', fontweight='bold')
+                        ax2.set_xlabel(f'패턴 이후 일 수')
+                        ax2.set_ylabel('수익률 (%)')
+                        ax2.legend(fontsize=7, loc='best')
+                        ax2.grid(True, alpha=0.3)
+                        plt.tight_layout()
+                        st.pyplot(fig, use_container_width=True)
+
+                        # === 3. 유사 패턴 상세 테이블 ===
+                        st.markdown("#### 🏆 유사 패턴 TOP-K 상세")
+                        match_data = []
+                        for idx, m in enumerate(prediction['matches']):
+                            start_str = m['start_date'].strftime('%Y-%m-%d') if m['start_date'] else '-'
+                            end_str = m['end_date'].strftime('%Y-%m-%d') if m['end_date'] else '-'
+                            final_ret = m['forecast_returns'][-1] if len(m['forecast_returns']) > 0 else 0
+                            match_data.append({
+                                '순위': f"#{idx+1}",
+                                '유사도': f"{m['similarity']:.4f}",
+                                '패턴 시작': start_str,
+                                '패턴 종료': end_str,
+                                f'{pat_horizon}일 후 수익률': f"{final_ret:+.2f}%",
+                                '방향': '📈 상승' if final_ret > 0 else '📉 하락',
+                            })
+                        st.dataframe(pd.DataFrame(match_data), hide_index=True, use_container_width=True)
+
+                        # === 4. 파라미터 제안 ===
+                        st.markdown("#### ⚙️ 파라미터 자동 제안")
+                        base_p = params_s.copy() if "안정" in pat_base else params_a.copy()
+                        suggestion = suggest_params_from_prediction(prediction, base_p)
+
+                        # 조정 내역 표시
+                        for adj in suggestion['adjustments']:
+                            st.info(f"**{adj[0]}** — {adj[1]} → {adj[2]}")
+
+                        # 기존 vs 제안 비교 테이블
+                        compare_keys = [
+                            ('bt_buy', '바닥 매수점(%)'),
+                            ('bt_prof', '바닥 익절(%)'),
+                            ('bt_time', '바닥 존버일'),
+                            ('md_buy', '중간 매수점(%)'),
+                            ('md_prof', '중간 익절(%)'),
+                            ('md_time', '중간 존버일'),
+                            ('cl_buy', '천장 매수점(%)'),
+                            ('cl_prof', '천장 익절(%)'),
+                            ('cl_time', '천장 존버일'),
+                        ]
+                        compare_rows = []
+                        for key, label in compare_keys:
+                            orig = base_p.get(key, '-')
+                            sugg = suggestion['suggested_params'].get(key, '-')
+                            # prof 값은 소수 → 퍼센트로 표시
+                            if 'prof' in key:
+                                orig_disp = f"{orig*100:.2f}" if isinstance(orig, float) else str(orig)
+                                sugg_disp = f"{sugg*100:.2f}" if isinstance(sugg, float) else str(sugg)
+                            else:
+                                orig_disp = str(orig)
+                                sugg_disp = str(sugg)
+                            changed = '✏️' if str(orig) != str(sugg) else ''
+                            compare_rows.append({'파라미터': label, '기존값': orig_disp, '제안값': sugg_disp, '변경': changed})
+
+                        st.dataframe(pd.DataFrame(compare_rows), hide_index=True, use_container_width=True)
+
+                        # 적용 버튼
+                        if st.button("✅ 제안 파라미터를 백테스트 연구소에 적용", type="primary", use_container_width=True):
+                            sugg_p = suggestion['suggested_params']
+                            # 세션에 제안 파라미터 저장 (다음 백테스트 시 사용 가능)
+                            st.session_state['pattern_suggested_params'] = sugg_p
+                            st.success("✅ 파라미터가 저장되었습니다! 백테스트 연구소에서 '실험 조건'을 수동으로 조정하거나, 아래 값을 참고하세요.")
+                            st.json({k: v for k, v in sugg_p.items() if k in [ck[0] for ck in compare_keys]})
 
         # === 공통 헬퍼: 점수 계산 ===
         def _calc_score(res):
