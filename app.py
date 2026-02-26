@@ -2041,6 +2041,11 @@ if sheet_url:
 
             with c_adp_in:
                 with st.form("adaptive_form"):
+                    adp_col1, adp_col2 = st.columns(2)
+                    with adp_col1:
+                        adp_start = st.date_input("📅 시작일", value=pd.to_datetime("2015-01-01"), key="adp_start")
+                    with adp_col2:
+                        adp_end = st.date_input("📅 종료일", value=pd.Timestamp.today(), key="adp_end")
                     adp_interval = st.number_input("🔄 조정 주기 (거래일)", 3, 20, 5, step=1, help="몇 거래일마다 패턴 분석 후 파라미터를 재조정할지")
                     adp_window = st.number_input("📏 패턴 윈도우 (일)", 10, 60, 20, step=5, help="패턴 비교에 사용할 윈도우 크기")
                     adp_horizon = st.number_input("🔭 예측 기간 (일)", 5, 30, 10, step=5, help="유사 패턴 이후 예측할 기간")
@@ -2051,6 +2056,8 @@ if sheet_url:
             with c_adp_out:
                 if adp_run:
                     base_p = params_s.copy() if "안정" in adp_base else params_a.copy()
+                    base_p['start_date'] = str(adp_start)
+                    base_p['end_date'] = str(adp_end)
 
                     with st.spinner("⏳ 고정 파라미터 백테스트 실행 중..."):
                         res_fixed = backtest_engine_web(df, base_p)
