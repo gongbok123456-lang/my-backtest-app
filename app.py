@@ -663,9 +663,10 @@ def backtest_engine_adaptive(df, params, adjust_interval=5, pattern_window=20, p
             stock[6] = peak_price
             target_p = excel_round_up(buy_p * (1 + s_conf['prof']), 2)
             is_sold = False; reason = ""
-            t_pct = active_params.get('trailing_pct', 0)
+            _trail_map_adp = {'Bottom': 'trailing_bt', 'Middle': 'trailing_md', 'Ceiling': 'trailing_cl'}
+            t_pct = active_params.get(_trail_map_adp.get(mode, 'trailing_pct'), active_params.get('trailing_pct', 0))
             if t_pct > 0 and today_close < peak_price * (1 - t_pct):
-                is_sold = True; reason = f"TrailingStop({t_pct*100:.0f}%)"
+                is_sold = True; reason = f"TrailingStop({t_pct*100:.0f}%/{mode})"
             elif days >= s_conf['time']:
                 is_sold = True; reason = f"TimeCut({days}d)"
             elif today_close >= target_p:
@@ -891,10 +892,11 @@ def backtest_engine_web(df, params):
             stock[6] = peak_price
             target_p = excel_round_up(buy_p * (1 + s_conf['prof']), 2)
             is_sold = False; reason = ""
-            # // NEW: MDD 패치 - 트레일링 스탑 (trailing_pct > 0 일 때만)
-            t_pct = params.get('trailing_pct', 0)
+            # // NEW: MDD 패치 - 모드별 트레일링 스탑
+            _trail_map = {'Bottom': 'trailing_bt', 'Middle': 'trailing_md', 'Ceiling': 'trailing_cl'}
+            t_pct = params.get(_trail_map.get(mode, 'trailing_pct'), params.get('trailing_pct', 0))
             if t_pct > 0 and today_close < peak_price * (1 - t_pct):
-                is_sold = True; reason = f"TrailingStop({t_pct*100:.0f}%)"
+                is_sold = True; reason = f"TrailingStop({t_pct*100:.0f}%/{mode})"
             elif days >= s_conf['time']: is_sold = True; reason = f"TimeCut({days}d)"
             elif today_close >= target_p: 
                 # [NEW] 볼린저 밴드 워크 (익절 지연) 로직
@@ -1163,10 +1165,12 @@ def backtest_engine_5mode(df, params):
             stock[6] = peak_price
             target_p = excel_round_up(buy_p * (1 + s_conf['prof']), 2)
             is_sold = False; reason = ""
-            # // NEW: MDD 패치 - 트레일링 스탑
-            t_pct = params.get('trailing_pct', 0)
+            # // NEW: MDD 패치 - 모드별 트레일링 스탑
+            _trail_map5 = {'Bottom': 'trailing_bt', 'Middle': 'trailing_md', 'Ceiling': 'trailing_cl',
+                           'PANIC_BOTTOM': 'trailing_bt', 'BEARISH': 'trailing_cl'}
+            t_pct = params.get(_trail_map5.get(mode, 'trailing_pct'), params.get('trailing_pct', 0))
             if t_pct > 0 and today_close < peak_price * (1 - t_pct):
-                is_sold = True; reason = f"TrailingStop({t_pct*100:.0f}%)"
+                is_sold = True; reason = f"TrailingStop({t_pct*100:.0f}%/{mode})"
             elif days >= s_conf['time']: is_sold = True; reason = f"TimeCut({days}d)"
             elif today_close >= target_p:
                 if params.get('use_bb_walk', False) and today_close > row['BB_Upper']:
@@ -1280,28 +1284,28 @@ def analyze_backtest_results(result):
     if sells.empty: return None
     sells['Date'] = pd.to_datetime(sells['Date'])
 
-    # ===== 1. 구간별 통계 (1년/3년/5년) =====
-    end_date = sells['Date'].max()
+    # ===== 1. 모드별(바닥/중간/천장) 통계 =====
     period_rows = []
-    for label, years in [('최근 1년', 1), ('최근 3년', 3), ('최근 5년', 5), ('전체', None)]:
-        if years:
-            cutoff = end_date - pd.DateOffset(years=years)
-            subset = sells[sells['Date'] >= cutoff]
-        else:
+    for label in ['Bottom', 'Middle', 'Ceiling', '전체']:
+        if label == '전체':
             subset = sells
+        else:
+            subset = sells[sells['Phase'] == label]
+        display_label = {'Bottom': '🟢 바닥', 'Middle': '🟡 중간', 'Ceiling': '🔴 천장'}.get(label, label)
         if subset.empty:
-            period_rows.append({'구간': label, '거래수': 0, '승률(%)': 0, '평균수익': 0, '손익비': 0})
+            period_rows.append({'구간': display_label, '거래수': 0, '승률(%)': 0, '평균수익': 0, '손익비': 0, '누적수익': 0})
             continue
         wins = subset[subset['Profit'] > 0]
         losses = subset[subset['Profit'] < 0]
         avg_win = wins['Profit'].mean() if len(wins) > 0 else 0
         avg_loss = abs(losses['Profit'].mean()) if len(losses) > 0 else 1
         period_rows.append({
-            '구간': label,
+            '구간': display_label,
             '거래수': len(subset),
             '승률(%)': round(len(wins) / len(subset) * 100, 1),
             '평균수익': round(subset['Profit'].mean(), 2),
-            '손익비': round(avg_win / avg_loss, 2) if avg_loss > 0 else float('inf')
+            '손익비': round(avg_win / avg_loss, 2) if avg_loss > 0 else float('inf'),
+            '누적수익': round(subset['Profit'].sum(), 2)
         })
     period_stats = pd.DataFrame(period_rows)
 
@@ -1412,6 +1416,9 @@ def compare_5mode(df, params):
     # 기존: 트레일링 없는 순수 3모드
     params_base = params.copy()
     params_base['trailing_pct'] = 0
+    params_base['trailing_bt'] = 0
+    params_base['trailing_md'] = 0
+    params_base['trailing_cl'] = 0
     res_orig = backtest_engine_web(df, params_base)
     # 패치: 트레일링 + 5모드
     res_5m = backtest_engine_5mode(df, params)
@@ -1748,7 +1755,10 @@ if sheet_url:
                     with st.expander("🪡 MDD 패치 옵션", expanded=False):
                         lab_use_5mode = st.checkbox("✅ 5모드 엔진 사용 (MA 이격도 전용)", value=False)
                         lab_compare_5m = st.checkbox("⚔️ 기존 3모드 vs 패치 비교", value=True)
-                        lab_trailing = st.number_input("🛑 트레일링 스탑 (%)", 0.0, 100.0, 20.0, step=1.0) / 100
+                        lab_trailing_c1, lab_trailing_c2, lab_trailing_c3 = st.columns(3)
+                        lab_trailing_bt = lab_trailing_c1.number_input("🛑 바닥 트레일링 (%)", 0.0, 100.0, 20.0, step=1.0, key="trail_bt") / 100
+                        lab_trailing_md = lab_trailing_c2.number_input("🛑 중간 트레일링 (%)", 0.0, 100.0, 20.0, step=1.0, key="trail_md") / 100
+                        lab_trailing_cl = lab_trailing_c3.number_input("🛑 천장 트레일링 (%)", 0.0, 100.0, 15.0, step=1.0, key="trail_cl") / 100
 
                     # // NEW: 5모드 모드별 UI 커스텀
                     with st.expander("🆕 5모드 상세 설정", expanded=False):
@@ -1801,7 +1811,7 @@ if sheet_url:
                         'md_buy': l_mb, 'md_prof': l_mp/100, 'md_time': l_mt,
                         'cl_cond': l_cc, 'cl_buy': l_cb, 'cl_prof': l_cp/100, 'cl_time': l_ct,
                         'tier_weights': lab_weights,
-                        'trailing_pct': lab_trailing, 'use_5mode': lab_use_5mode,
+                        'trailing_pct': lab_trailing_bt, 'trailing_bt': lab_trailing_bt, 'trailing_md': lab_trailing_md, 'trailing_cl': lab_trailing_cl, 'use_5mode': lab_use_5mode,
                         # // NEW: 5모드 모드별 커스텀 (매수/익절/존버일)
                         'panic_buy': lab_panic_buy, 'panic_prof': lab_panic_prof/100, 'panic_time': lab_panic_time,
                         'bear_buy': lab_bear_buy, 'bear_prof': lab_bear_prof/100, 'bear_time': lab_bear_time,
